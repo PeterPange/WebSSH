@@ -118,6 +118,14 @@ body {
 .auth-logo { color: var(--accent); font-weight: 700; font-size: 18px; margin-bottom: 26px; }
 .auth-card h1 { font-size: 22px; margin-bottom: 6px; }
 .auth-subtitle { color: var(--text-dim); font-size: 13px; margin-bottom: 22px; }
+.password-input { display: block; position: relative; }
+.password-input input { width: 100%; padding-right: 58px; }
+.password-toggle {
+  position: absolute; right: 7px; top: 50%; transform: translateY(-50%);
+  border: 0; background: transparent; color: var(--accent); cursor: pointer;
+  font: inherit; font-size: 12px; padding: 4px;
+}
+.password-toggle:hover { text-decoration: underline; }
 .auth-form { display: flex; flex-direction: column; gap: 12px; }
 .auth-form label { display: flex; flex-direction: column; gap: 6px; color: var(--text-dim); font-size: 12px; }
 .auth-form input {

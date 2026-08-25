@@ -96,7 +96,7 @@ function verifyPassword(password, encoded) {
 }
 
 const stmtGetUserByName = db.prepare('SELECT id, username, password_hash, is_admin, created_at FROM users WHERE username = ? COLLATE NOCASE');
-const stmtGetUserById = db.prepare('SELECT id, username, is_admin, created_at FROM users WHERE id = ?');
+const stmtGetUserById = db.prepare('SELECT id, username, password_hash, is_admin, created_at FROM users WHERE id = ?');
 const stmtInsertUser = db.prepare('INSERT INTO users (username, password_hash, is_admin, created_at) VALUES (?, ?, ?, ?)');
 const stmtSetAdmin = db.prepare('UPDATE users SET is_admin = 1 WHERE id = ?');
 let admin = stmtGetUserByName.get(ADMIN_USERNAME);
@@ -216,6 +216,20 @@ app.get('/api/auth/me', (req, res) => {
   const auth = authFromRequest(req);
   if (!auth) return res.status(401).json({ error: 'Not signed in' });
   res.json({ user: { id: auth.user.id, username: auth.user.username, isAdmin: !!auth.user.is_admin } });
+});
+
+app.post('/api/auth/password', (req, res) => {
+  const currentPassword = typeof req.body?.currentPassword === 'string' ? req.body.currentPassword : '';
+  const newPassword = typeof req.body?.newPassword === 'string' ? req.body.newPassword : '';
+  if (!verifyPassword(currentPassword, req.user.password_hash)) {
+    return res.status(401).json({ error: 'Current password is incorrect' });
+  }
+  const err = validateNewUser(req.user.username, newPassword);
+  if (err) return res.status(400).json({ error: err });
+  stmtSetPassword.run(hashPassword(newPassword), req.user.id);
+  invalidateUserSessions(req.user.id);
+  clearAuthCookie(res);
+  res.json({ ok: true });
 });
 
 function closeUserSshSessions(userId) {

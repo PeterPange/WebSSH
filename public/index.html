@@ -42,11 +42,36 @@
       <button id="btn-add-server" class="btn primary">+ Add server</button>
       <div class="auth-user">
         <span id="current-user" class="dim"></span>
+        <button id="btn-change-password" class="btn ghost">Change password</button>
         <button id="btn-users" class="btn ghost hidden">User management</button>
         <button id="btn-logout" class="btn ghost">Sign out</button>
       </div>
     </div>
   </header>
+
+  <div id="change-password-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>Change password</h3>
+        <button type="button" class="btn ghost small" id="btn-change-password-close">✕</button>
+      </div>
+      <form id="change-password-form" class="auth-form">
+        <label>Current password
+          <input name="currentPassword" type="password" autocomplete="current-password" required />
+        </label>
+        <label>New password
+          <input name="newPassword" type="password" autocomplete="new-password" minlength="8" maxlength="128" required />
+        </label>
+        <label>Confirm new password
+          <input name="confirmPassword" type="password" autocomplete="new-password" minlength="8" maxlength="128" required />
+        </label>
+        <div class="form-actions">
+          <button type="submit" class="btn primary">Update password</button>
+          <button type="button" class="btn ghost" id="btn-change-password-cancel">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </div>
 
   <!-- ======== Dashboard view ======== -->
   <main id="view-dashboard" class="main dashboard">

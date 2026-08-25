@@ -3,6 +3,31 @@
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
 
+function addPasswordVisibilityButtons() {
+  $$('input[type="password"]').forEach((input) => {
+    if (input.dataset.visibilityReady) return;
+    input.dataset.visibilityReady = '1';
+    const wrap = document.createElement('span');
+    wrap.className = 'password-input';
+    input.parentNode.insertBefore(wrap, input);
+    wrap.appendChild(input);
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'password-toggle';
+    button.textContent = 'Show';
+    button.setAttribute('aria-label', 'Show password');
+    button.onclick = () => {
+      const shown = input.type === 'text';
+      input.type = shown ? 'password' : 'text';
+      button.textContent = shown ? 'Show' : 'Hide';
+      button.setAttribute('aria-label', shown ? 'Show password' : 'Hide password');
+    };
+    wrap.appendChild(button);
+  });
+}
+
+addPasswordVisibilityButtons();
+
 function updateAuthClock() {
   const now = new Date();
   const pad = (n) => String(n).padStart(2, '0');
@@ -281,6 +306,33 @@ async function logout() {
 }
 
 $('#btn-logout').onclick = logout;
+
+function closeChangePasswordModal() {
+  $('#change-password-modal').classList.add('hidden');
+  $('#change-password-form').reset();
+}
+
+$('#btn-change-password').onclick = () => {
+  $('#change-password-form').reset();
+  $('#change-password-modal').classList.remove('hidden');
+  setTimeout(() => $('#change-password-form').currentPassword.focus(), 50);
+};
+$('#btn-change-password-close').onclick = closeChangePasswordModal;
+$('#btn-change-password-cancel').onclick = closeChangePasswordModal;
+$('#change-password-modal').addEventListener('click', (e) => { if (e.target === e.currentTarget) closeChangePasswordModal(); });
+$('#change-password-form').onsubmit = async (e) => {
+  e.preventDefault();
+  const form = e.currentTarget;
+  const currentPassword = String(form.currentPassword.value || '');
+  const newPassword = String(form.newPassword.value || '');
+  if (newPassword !== String(form.confirmPassword.value || '')) return toast('New passwords do not match', 'error');
+  try {
+    await api('/api/auth/password', { method: 'POST', body: JSON.stringify({ currentPassword, newPassword }) });
+    closeChangePasswordModal();
+    toast('Password updated. Please sign in again.', 'ok');
+    showLoginPage();
+  } catch (err) { toast('Password update failed: ' + err.message, 'error'); }
+};
 
 /* ================= user management (admin) ================= */
 
