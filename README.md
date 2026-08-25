@@ -17,6 +17,8 @@ Open `http://SERVER_IP:9998` in a browser. The first start creates the SQLite da
 
 The initial administrator credentials are `admin` / `changeme`. They are intended only for local evaluation. Before deploying anywhere accessible to others, set a strong password in `.env`. The administrator is created only on the first initialization of an empty data directory; later environment-variable changes do not modify an existing account.
 
+For shared servers without an administrator-specific connection record, the administrator automatically uses the SSH fallback `admin` / `changeme`; this is configured with `WEBSSH_DEFAULT_SSH_USERNAME` and `WEBSSH_DEFAULT_SSH_PASSWORD`. Regular users must configure their own SSH connection information for each server.
+
 ### Docker deployment
 
 If Docker and Docker Compose are available, run:

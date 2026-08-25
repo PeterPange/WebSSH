@@ -863,14 +863,14 @@ function openCredsModal(server) {
   const f = $('#creds-form');
   f.reset();
   const mine = server.mine;
-  $('#creds-modal-title').textContent = `My connection · ${serverLabel(server)}`;
+  $('#creds-modal-title').textContent = `${mine?.isDefault ? 'Default admin connection' : 'My connection'} · ${serverLabel(server)}`;
   if (mine) {
     f.username.value = mine.username || '';
     f.password.value = mine.creds?.password || '';
     f.privateKey.value = mine.creds?.privateKey || '';
     f.passphrase.value = mine.creds?.passphrase || '';
     f.sudoPassword.value = mine.creds?.sudoPassword || '';
-    $('#btn-creds-remove').classList.remove('hidden');
+    $('#btn-creds-remove').classList.toggle('hidden', !!mine.isDefault);
   } else {
     $('#btn-creds-remove').classList.add('hidden');
   }

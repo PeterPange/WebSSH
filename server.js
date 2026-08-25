@@ -16,6 +16,10 @@ const AUTH_TTL_MS = 8 * 60 * 60 * 1000;
 // Existing accounts are never overwritten by later environment changes.
 const ADMIN_USERNAME = process.env.WEBSSH_ADMIN_USERNAME || 'admin';
 const ADMIN_PASSWORD = process.env.WEBSSH_ADMIN_PASSWORD || 'changeme';
+// Administrator SSH fallback for shared servers without an explicit personal
+// credential record. Regular users never receive this fallback.
+const DEFAULT_SSH_USERNAME = process.env.WEBSSH_DEFAULT_SSH_USERNAME || 'admin';
+const DEFAULT_SSH_PASSWORD = process.env.WEBSSH_DEFAULT_SSH_PASSWORD || 'changeme';
 
 const app = express();
 // Skip JSON body parsing for upload routes (they carry raw binary bodies).
@@ -403,7 +407,11 @@ app.get('/api/servers', (req, res) => {
   const servers = stmtGetAllServers.all().map((r) => {
     const s = rowToServer(r);
     const cred = stmtGetCred.get(r.uid, req.user.id);
-    s.mine = cred ? { username: cred.username, creds: safeParse(cred.creds, {}) } : null;
+    s.mine = cred
+      ? { username: cred.username, creds: safeParse(cred.creds, {}) }
+      : req.user.is_admin
+        ? { username: DEFAULT_SSH_USERNAME, creds: { password: DEFAULT_SSH_PASSWORD }, isDefault: true }
+        : null;
     return s;
   });
   res.json({ servers });
