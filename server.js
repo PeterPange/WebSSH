@@ -16,9 +16,8 @@ const AUTH_TTL_MS = 8 * 60 * 60 * 1000;
 // Existing accounts are never overwritten by later environment changes.
 const ADMIN_USERNAME = process.env.WEBSSH_ADMIN_USERNAME || 'admin';
 const ADMIN_PASSWORD = process.env.WEBSSH_ADMIN_PASSWORD || 'changeme';
-// Administrator SSH fallback for shared servers without an explicit personal
-// credential record. Regular users never receive this fallback.
-const DEFAULT_SSH_USERNAME = process.env.WEBSSH_DEFAULT_SSH_USERNAME || 'admin';
+// Every user receives this initial SSH password for every shared server.
+// Users can replace their own connection information afterwards.
 const DEFAULT_SSH_PASSWORD = process.env.WEBSSH_DEFAULT_SSH_PASSWORD || 'changeme';
 
 const app = express();
@@ -252,7 +251,9 @@ function validateNewUser(username, password) {
 
 function createUser(username, password) {
   const result = stmtInsertUser.run(username, hashPassword(password), 0, Date.now());
-  return { id: result.lastInsertRowid, username, isAdmin: false };
+  const user = { id: result.lastInsertRowid, username, isAdmin: false };
+  ensureDefaultCredentialsForUser(user);
+  return user;
 }
 
 app.post('/api/auth/register', (req, res) => {
@@ -392,6 +393,39 @@ const stmtUpsertCred = db.prepare(`
 const stmtDeleteCred = db.prepare('DELETE FROM server_creds WHERE server_uid = ? AND user_id = ?');
 const stmtDeleteCredsByServer = db.prepare('DELETE FROM server_creds WHERE server_uid = ?');
 const stmtDeleteCredsByUser = db.prepare('DELETE FROM server_creds WHERE user_id = ?');
+const stmtInsertDefaultCred = db.prepare(`
+  INSERT OR IGNORE INTO server_creds (server_uid, user_id, username, creds, updated_at)
+  VALUES (?, ?, ?, ?, ?)
+`);
+const stmtAllServerUids = db.prepare('SELECT uid FROM servers');
+
+function defaultSshCreds() {
+  return JSON.stringify({ password: DEFAULT_SSH_PASSWORD, privateKey: null, keyRef: null, passphrase: null, sudoPassword: null });
+}
+
+function ensureDefaultCredentialsForUser(user) {
+  const now = Date.now();
+  const creds = defaultSshCreds();
+  const seed = db.transaction(() => {
+    for (const server of stmtAllServerUids.all()) {
+      stmtInsertDefaultCred.run(server.uid, user.id, user.username, creds, now);
+    }
+  });
+  seed();
+}
+
+function ensureDefaultCredentialsForServer(serverUid) {
+  const now = Date.now();
+  const creds = defaultSshCreds();
+  const seed = db.transaction(() => {
+    for (const user of stmtListUsers.all()) {
+      stmtInsertDefaultCred.run(serverUid, user.id, user.username, creds, now);
+    }
+  });
+  seed();
+}
+
+for (const user of stmtListUsers.all()) ensureDefaultCredentialsForUser(user);
 
 function safeParse(s, dflt) {
   try { return s ? JSON.parse(s) : dflt; } catch (e) { return dflt; }
@@ -410,14 +444,11 @@ function rowToServer(r) {
 // Servers are shared: every user sees the full list, plus (mine) their own
 // connection info for each server, or null when they have none configured.
 app.get('/api/servers', (req, res) => {
+  ensureDefaultCredentialsForUser(req.user);
   const servers = stmtGetAllServers.all().map((r) => {
     const s = rowToServer(r);
     const cred = stmtGetCred.get(r.uid, req.user.id);
-    s.mine = cred
-      ? { username: cred.username, creds: safeParse(cred.creds, {}) }
-      : req.user.is_admin
-        ? { username: DEFAULT_SSH_USERNAME, creds: { password: DEFAULT_SSH_PASSWORD }, isDefault: true }
-        : null;
+    s.mine = cred ? { username: cred.username, creds: safeParse(cred.creds, {}) } : null;
     return s;
   });
   res.json({ servers });
@@ -443,6 +474,7 @@ app.post('/api/servers', (req, res) => {
   } catch (e) {
     return res.status(500).json({ error: e.message });
   }
+  ensureDefaultCredentialsForServer(String(b.uid));
   res.json({ ok: true });
 });
 
