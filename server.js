@@ -597,7 +597,7 @@ app.get('/api/sessions', (req, res) => {
 
 app.delete('/api/sessions/:id', (req, res) => {
   const session = sessions.get(req.params.id);
-  if (!session || session.userId !== req.user.id) return res.status(404).json({ error: '会话不存在' });
+  if (!session || session.userId !== req.user.id) return res.status(404).json({ error: 'Session does not exist' });
   for (const [ws, sid] of termSockets) {
     if (sid === session.id && ws.readyState === WebSocket.OPEN) ws.close();
   }
@@ -611,13 +611,13 @@ app.delete('/api/sessions/:id', (req, res) => {
 app.post('/api/exec', async (req, res) => {
   const { sessionId, command, sudo, timeout } = req.body || {};
   const session = sessions.get(sessionId);
-  if (!session || !session.connected || session.userId !== req.user.id) return res.status(404).json({ error: '会话不存在或已断开' });
+  if (!session || !session.connected || session.userId !== req.user.id) return res.status(404).json({ error: 'Session does not exist or has disconnected' });
   if (!command || typeof command !== 'string' || command.length > 10000) {
-    return res.status(400).json({ error: 'command 参数无效' });
+    return res.status(400).json({ error: 'Invalid command parameter' });
   }
   let cmd = command;
   if (sudo) {
-    if (!session.sudoPassword) return res.status(400).json({ error: '未提供 sudo 密码' });
+    if (!session.sudoPassword) return res.status(400).json({ error: 'No sudo password was provided' });
     cmd = `echo ${shq(session.sudoPassword)} | sudo -S -p '' ${command}`;
   }
   try {
@@ -820,14 +820,14 @@ app.get('/api/status/:id', async (req, res) => {
 app.get('/api/files/:id', async (req, res) => {
   const session = requireSession(req, res);
   if (!session) return;
-  if (!session.homeDir) return res.status(400).json({ error: '无法确定主目录，文件管理不可用' });
+  if (!session.homeDir) return res.status(400).json({ error: 'Home directory is unknown; file manager is unavailable' });
   // Default to home; accept explicit paths only if they stay inside home.
   const requested = req.query.path || session.homeDir;
   const remotePath = resolveJailedPath(session, requested);
-  if (!remotePath) return res.status(403).json({ error: '路径超出主目录范围，已禁止访问' });
+  if (!remotePath) return res.status(403).json({ error: 'Path is outside the home directory and access is denied' });
   try {
     const real = await realPathJailed(session, remotePath);
-    if (!real) return res.status(403).json({ error: '路径不可解析或符号链接指向主目录之外' });
+    if (!real) return res.status(403).json({ error: 'Path cannot be resolved or its symlink points outside the home directory' });
     const sftp = await getSftp(session);
     const entries = await new Promise((resolve, reject) => {
       sftp.readdir(remotePath, (err, list) => (err ? reject(err) : resolve(list)));
@@ -860,13 +860,13 @@ app.post('/api/files/:id/upload', async (req, res) => {
   const dir = req.query.path || session.homeDir;
   const name = req.query.name || 'upload.bin';
   const dest = resolveJailedPath(session, joinPath(dir, name));
-  if (!dest) return res.status(403).json({ error: '路径超出主目录范围，已禁止上传' });
+  if (!dest) return res.status(403).json({ error: 'Path is outside the home directory and upload is denied' });
   const parent = parentPath(dest);
   try {
     // Resolve the parent before opening the destination. This prevents a
     // symlinked directory inside the home from redirecting an upload outside.
     const parentReal = await realPathJailed(session, parent);
-    if (!parentReal) return res.status(403).json({ error: '上传目录不可解析或位于主目录之外' });
+    if (!parentReal) return res.status(403).json({ error: 'Upload directory cannot be resolved or is outside the home directory' });
     const sftp = await getSftp(session);
     // Stream into a unique temporary file so large uploads do not consume
     // server memory and an interrupted upload cannot truncate the old file.
@@ -893,7 +893,7 @@ app.get('/api/files/:id/download', async (req, res) => {
   if (!session) return;
   if (!session.homeDir) return res.status(400).json({ error: '无法确定主目录，文件管理不可用' });
   const remotePath = resolveJailedPath(session, req.query.path);
-  if (!remotePath) return res.status(403).json({ error: 'path 必填且不能超出主目录范围' });
+  if (!remotePath) return res.status(403).json({ error: 'path is required and must remain inside the home directory' });
   try {
     const real = await realPathJailed(session, remotePath);
     if (!real) return res.status(403).json({ error: '路径不可解析或符号链接指向主目录之外' });
@@ -984,7 +984,7 @@ function readRemoteText(sftp, remotePath) {
     rs.on('data', (chunk) => {
       total += chunk.length;
       if (total > EDIT_MAX_BYTES) {
-        rs.destroy(new Error('文件过大，编辑器仅支持 1 MiB 以内的文本文件'));
+        rs.destroy(new Error('File is too large; the editor supports text files up to 1 MiB'));
         return;
       }
       chunks.push(chunk);
@@ -992,7 +992,7 @@ function readRemoteText(sftp, remotePath) {
     rs.on('error', reject);
     rs.on('end', () => {
       const content = Buffer.concat(chunks);
-      if (content.includes(0)) return reject(new Error('检测到二进制内容，请使用下载后在本地编辑'));
+      if (content.includes(0)) return reject(new Error('Binary content detected; download and edit the file locally'));
       resolve(content.toString('utf8'));
     });
   });
@@ -1009,9 +1009,9 @@ app.get('/api/files/:id/edit', async (req, res) => {
     if (!real) return res.status(403).json({ error: '路径不可解析或符号链接指向主目录之外' });
     const sftp = await getSftp(session);
     const attrs = await sftpStat(sftp, remotePath);
-    if (attrs.isDirectory()) return res.status(400).json({ error: '目录不能使用编辑器打开' });
+    if (attrs.isDirectory()) return res.status(400).json({ error: 'Directories cannot be opened in the editor' });
     if (Number(attrs.size || 0) > EDIT_MAX_BYTES) {
-      return res.status(413).json({ error: '文件过大，编辑器仅支持 1 MiB 以内的文本文件' });
+      return res.status(413).json({ error: 'File is too large; the editor supports text files up to 1 MiB' });
     }
     res.json({ path: remotePath, content: await readRemoteText(sftp, remotePath), version: fileVersion(attrs) });
   } catch (e) {
@@ -1024,9 +1024,9 @@ app.post('/api/files/:id/edit', async (req, res) => {
   if (!session) return;
   if (!session.homeDir) return res.status(400).json({ error: '无法确定主目录，文件管理不可用' });
   const { path: target, content, version: expectedVersion } = req.body || {};
-  if (typeof content !== 'string') return res.status(400).json({ error: 'content 必须是文本' });
+  if (typeof content !== 'string') return res.status(400).json({ error: 'content must be text' });
   const size = Buffer.byteLength(content, 'utf8');
-  if (size > EDIT_MAX_BYTES) return res.status(413).json({ error: '文件过大，编辑器仅支持 1 MiB 以内的文本文件' });
+  if (size > EDIT_MAX_BYTES) return res.status(413).json({ error: 'File is too large; the editor supports text files up to 1 MiB' });
   const remotePath = resolveJailedPath(session, target);
   if (!remotePath) return res.status(403).json({ error: 'path 必填且不能超出主目录范围' });
   try {
@@ -1034,13 +1034,13 @@ app.post('/api/files/:id/edit', async (req, res) => {
     if (!real) return res.status(403).json({ error: '路径不可解析或符号链接指向主目录之外' });
     const sftp = await getSftp(session);
     const attrs = await sftpStat(sftp, remotePath);
-    if (attrs.isDirectory()) return res.status(400).json({ error: '目录不能保存为文件' });
+    if (attrs.isDirectory()) return res.status(400).json({ error: 'A directory cannot be saved as a file' });
     const currentVersion = fileVersion(attrs);
     if (expectedVersion && (
       Number(expectedVersion.size) !== currentVersion.size
       || Number(expectedVersion.mtime) !== currentVersion.mtime
     )) {
-      return res.status(409).json({ error: '远程文件已被其他操作修改，请重新打开后再保存', version: currentVersion });
+      return res.status(409).json({ error: 'The remote file changed. Reopen it before saving.', version: currentVersion });
     }
     // Write to a sibling temp file first. A failed connection or SFTP write
     // must not leave the user's original file truncated or half-written.

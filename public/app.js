@@ -992,7 +992,7 @@ async function refreshGpu() {
   }
   const box = $('#gpu-container');
   if (!data.available) {
-    box.innerHTML = `<div class="empty-state">未检测到 NVIDIA GPU（nvidia-smi 不可用）${data.error ? ' - ' + esc(data.error) : ''}</div>`;
+    box.innerHTML = `<div class="empty-state">No NVIDIA GPU detected (nvidia-smi is unavailable)${data.error ? ' - ' + esc(data.error) : ''}</div>`;
     return;
   }
   const h = gpuHistory(state.activeId);
@@ -1005,27 +1005,27 @@ async function refreshGpu() {
 
   box.innerHTML = `
     <div class="gpu-header">
-      <b>显卡监控</b>
-      <span class="meta">驱动: ${esc(data.driver || '未知')} | GPU 数量: ${data.count} | 每 2 秒刷新</span>
+      <b>GPU monitor</b>
+      <span class="meta">Driver: ${esc(data.driver || 'Unknown')} | GPUs: ${data.count} | Updates every 2 seconds</span>
     </div>
     <div class="gpu-grid" id="gpu-grid"></div>
     <div class="gpu-charts">
       <div class="chart-box">
-        <h4>利用率历史 (GPU Util %)</h4>
+        <h4>Utilization history (GPU %)</h4>
         <canvas id="chart-util"></canvas>
         <div class="chart-legend" id="legend-util"></div>
       </div>
       <div class="chart-box">
-        <h4>显存历史 (MiB)</h4>
+        <h4>Memory history (MiB)</h4>
         <canvas id="chart-mem"></canvas>
         <div class="chart-legend" id="legend-mem"></div>
       </div>
     </div>
     <div class="gpu-procs">
-      <h4>GPU 进程（用户 / 指令 / 显存）</h4>
+      <h4>GPU processes (user / command / memory)</h4>
       <div class="file-table-wrap" style="max-height:300px">
         <table class="tbl gpu-proc-tbl">
-          <thead><tr><th>PID</th><th>用户</th><th>进程名</th><th>指令</th><th>显存占用</th></tr></thead>
+          <thead><tr><th>PID</th><th>User</th><th>Process</th><th>Command</th><th>Memory</th></tr></thead>
           <tbody>
             ${data.processes.length
               ? data.processes.map((p) => `<tr>
@@ -1035,7 +1035,7 @@ async function refreshGpu() {
                   <td class="cmd" title="${esc(p.command || p.name)}">${esc(p.command || p.name)}</td>
                   <td>${fmtMB(p.memUsed)}</td>
                 </tr>`).join('')
-              : '<tr><td colspan="5" class="dim">当前没有 GPU 进程</td></tr>'}
+              : '<tr><td colspan="5" class="dim">No GPU processes</td></tr>'}
           </tbody>
         </table>
       </div>
@@ -1051,20 +1051,20 @@ async function refreshGpu() {
     card.innerHTML = `
       <div class="title"><span class="idx">GPU ${g.index ?? i}</span><span class="name">${esc(g.name)}</span></div>
       <div class="metric-row">
-        <div class="lbl"><span>利用率</span><span class="${utilCls(util)}">${util}%</span></div>
+        <div class="lbl"><span>Utilization</span><span class="${utilCls(util)}">${util}%</span></div>
         <div class="bar"><i class="${barCls(util)}" style="width:${util}%"></i></div>
       </div>
       <div class="metric-row">
-        <div class="lbl"><span>显存 ${fmtMB(g.memUsed)} / ${fmtMB(g.memTotal)}</span><span class="${utilCls(memPct)}">${memPct.toFixed(0)}%</span></div>
+        <div class="lbl"><span>Memory ${fmtMB(g.memUsed)} / ${fmtMB(g.memTotal)}</span><span class="${utilCls(memPct)}">${memPct.toFixed(0)}%</span></div>
         <div class="bar"><i class="${barCls(memPct)}" style="width:${memPct}%"></i></div>
       </div>
       <div class="metric-row">
-        <div class="lbl"><span>显存带宽利用率</span><span class="${utilCls(g.memUtil)}">${g.memUtil ?? '-'}%</span></div>
+        <div class="lbl"><span>Memory bandwidth utilization</span><span class="${utilCls(g.memUtil)}">${g.memUtil ?? '-'}%</span></div>
         <div class="bar"><i class="${barCls(g.memUtil ?? 0)}" style="width:${g.memUtil ?? 0}%"></i></div>
       </div>
       <div class="gpu-stats">
-        <span>温度 <b>${g.temp ?? '-'}°C</b></span>
-        <span>功耗 <b>${g.power != null ? g.power.toFixed(1) + ' W' : '-'}</b>${g.powerLimit ? ' / ' + g.powerLimit + ' W' : ''}</span>
+        <span>Temperature <b>${g.temp ?? '-'}°C</b></span>
+        <span>Power <b>${g.power != null ? g.power.toFixed(1) + ' W' : '-'}</b>${g.powerLimit ? ' / ' + g.powerLimit + ' W' : ''}</span>
       </div>`;
     grid.appendChild(card);
   });
@@ -1078,8 +1078,8 @@ async function refreshGpu() {
   const memSeries = data.gpus.map((_, gpuIndex) => h.map((p) => p.mems[gpuIndex] ?? 0));
   drawLineChart($('#chart-util'), utilSeries, GPU_COLORS, 100, '%');
   drawLineChart($('#chart-mem'), memSeries, GPU_COLORS, null, 'MiB');
-  renderLegend('#legend-util', data.gpus, 'GPU 利用率');
-  renderLegend('#legend-mem', data.gpus, 'GPU 显存');
+  renderLegend('#legend-util', data.gpus, 'GPU utilization');
+  renderLegend('#legend-mem', data.gpus, 'GPU memory');
 }
 
 function renderLegend(sel, gpus, label) {
