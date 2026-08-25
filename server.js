@@ -15,7 +15,7 @@ const AUTH_TTL_MS = 8 * 60 * 60 * 1000;
 // Used only when creating the first administrator in a fresh data directory.
 // Existing accounts are never overwritten by later environment changes.
 const ADMIN_USERNAME = process.env.WEBSSH_ADMIN_USERNAME || 'admin';
-const ADMIN_PASSWORD = process.env.WEBSSH_ADMIN_PASSWORD || 'pwd1234';
+const ADMIN_PASSWORD = process.env.WEBSSH_ADMIN_PASSWORD || 'changeme';
 
 const app = express();
 // Skip JSON body parsing for upload routes (they carry raw binary bodies).

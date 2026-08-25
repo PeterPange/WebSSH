@@ -15,7 +15,7 @@ npm ci --omit=dev
 
 Open `http://SERVER_IP:9998` in a browser. The first start creates the SQLite database and administrator account in `WEBSSH_DATA_DIR`.
 
-The initial administrator credentials are `admin` / `pwd1234`. They are intended only for local evaluation. Before deploying anywhere accessible to others, set a strong password in `.env`. The administrator is created only on the first initialization of an empty data directory; later environment-variable changes do not modify an existing account.
+The initial administrator credentials are `admin` / `changeme`. They are intended only for local evaluation. Before deploying anywhere accessible to others, set a strong password in `.env`. The administrator is created only on the first initialization of an empty data directory; later environment-variable changes do not modify an existing account.
 
 ### Docker deployment
 

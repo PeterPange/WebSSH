@@ -36,7 +36,7 @@ async function main() {
   check('bad login rejected', auth.status === 401);
   auth = await api('/api/auth/login', {
     method: 'POST',
-    body: JSON.stringify({ username: 'admin', password: 'pwd1234' }),
+    body: JSON.stringify({ username: 'admin', password: 'changeme' }),
   });
   check('admin login ok', auth.status === 200 && auth.data.user?.isAdmin === true);
   let me = await api('/api/auth/me');
@@ -64,7 +64,7 @@ async function main() {
   await api('/api/auth/logout', { method: 'POST' });
   auth = await api('/api/auth/login', {
     method: 'POST',
-    body: JSON.stringify({ username: 'admin', password: 'pwd1234' }),
+    body: JSON.stringify({ username: 'admin', password: 'changeme' }),
   });
   check('admin can log back in', auth.status === 200);
   ownServers = await api('/api/servers');
