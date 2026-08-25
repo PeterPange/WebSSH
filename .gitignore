@@ -1,0 +1,6 @@
+node_modules/
+data/
+dist/
+.env
+exports/
+test/test_connectivity.js

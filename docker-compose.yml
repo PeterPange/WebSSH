@@ -1,0 +1,13 @@
+services:
+  web-ssh-manager:
+    build: .
+    container_name: web-ssh-manager
+    restart: unless-stopped
+    ports:
+      - "9998:9998"
+    env_file:
+      - .env
+    environment:
+      WEBSSH_DATA_DIR: /data
+    volumes:
+      - ./data:/data

@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Web SSH Manager</title>
+  <link rel="stylesheet" href="/style.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css" />
+</head>
+<body>
+  <section id="auth-view" class="auth-view">
+    <div class="auth-card">
+      <div class="auth-logo">⬢ Web SSH Manager</div>
+      <h1>Sign in</h1>
+      <p class="auth-subtitle" id="auth-clock">Current time: --</p>
+      <form id="login-form" class="auth-form">
+        <label>Username
+          <input id="login-username" name="username" autocomplete="username" required autofocus />
+        </label>
+        <label>Password
+          <input id="login-password" name="password" type="password" autocomplete="current-password" required />
+        </label>
+        <div id="login-error" class="auth-error"></div>
+        <button type="submit" class="btn primary auth-submit" id="btn-login">Sign in</button>
+      </form>
+    </div>
+  </section>
+
+  <div id="app-view" class="app-view hidden">
+  <header class="topbar">
+    <div class="logo">⬢ Web SSH Manager</div>
+    <div id="summary" class="summary"></div>
+    <div id="dashboard-clock" class="header-clock">Current time: --</div>
+    <div class="topbar-actions">
+      <div class="theme-switch">
+        <button id="btn-theme" class="btn ghost" title="Switch theme" aria-haspopup="true" aria-expanded="false">🎨 Theme</button>
+        <div id="theme-menu" class="theme-menu" role="menu">
+          <div class="tm-title">Appearance</div>
+        </div>
+      </div>
+      <button id="btn-import-server" class="btn ghost">⇪ Import servers</button>
+      <button id="btn-add-server" class="btn primary">+ Add server</button>
+      <div class="auth-user">
+        <span id="current-user" class="dim"></span>
+        <button id="btn-register-user" class="btn ghost hidden">Register user</button>
+        <button id="btn-logout" class="btn ghost">Sign out</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- ======== Dashboard view ======== -->
+  <main id="view-dashboard" class="main dashboard">
+    <div id="empty-dashboard" class="empty-state">
+      <div class="empty-box">
+        <div class="empty-icon">⬢</div>
+        <p>No servers yet</p>
+        <p class="dim">Use “+ Add server” in the upper-right corner to add SSH connection details.</p>
+      </div>
+    </div>
+    <div id="server-grid" class="server-grid"></div>
+  </main>
+
+  <!-- ======== Server detail view ======== -->
+  <main id="view-detail" class="main detail hidden">
+    <div class="detail-header">
+      <button id="btn-back" class="btn ghost small">← Server list</button>
+      <div class="detail-title">
+        <span id="detail-name"></span>
+        <span id="detail-meta" class="dim"></span>
+      </div>
+      <span id="detail-status" class="status-badge offline">○ Disconnected</span>
+      <button id="btn-detail-action" class="btn primary small">Connect</button>
+    </div>
+    <nav class="tabs" id="tabs">
+      <button data-tab="terminal" class="active">Terminal</button>
+      <button data-tab="gpu">GPU monitor</button>
+      <button data-tab="files">Files</button>
+      <button data-tab="system">System info</button>
+    </nav>
+    <section id="tab-terminal" class="tab active">
+      <div id="terminal-container" class="terminal-container"></div>
+    </section>
+    <section id="tab-gpu" class="tab">
+      <div id="gpu-container" class="panel">
+        <div class="empty-state" id="gpu-empty">No server connected</div>
+      </div>
+    </section>
+    <section id="tab-files" class="tab">
+      <div id="files-container" class="panel">
+        <div class="empty-state" id="files-empty">No server connected</div>
+      </div>
+    </section>
+    <section id="tab-system" class="tab">
+      <div id="system-container" class="panel">
+        <div class="empty-state" id="system-empty">No server connected</div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ======== Add/edit server modal ======== -->
+  <div id="server-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 id="modal-title">Add server</h3>
+        <button type="button" id="btn-modal-close" class="btn ghost small">✕</button>
+      </div>
+      <form id="server-form" class="server-form">
+        <div class="grid2">
+          <label>Label (optional)
+            <input name="label" placeholder="Training node 01" autocomplete="off" />
+          </label>
+          <label>SSH port
+            <input name="port" type="number" value="22" min="1" max="65535" required />
+          </label>
+          <label class="span2">Host IP / domain
+            <input name="host" placeholder="192.168.1.100" required autocomplete="off" />
+          </label>
+          <label>Username
+            <input name="username" placeholder="root" required autocomplete="off" />
+          </label>
+          <label>Password
+            <input name="password" type="password" placeholder="Use password or private key" autocomplete="new-password" />
+          </label>
+          <label>Sudo password (optional)
+            <input name="sudoPassword" type="password" placeholder="For privileged commands" autocomplete="new-password" />
+          </label>
+          <label>Key passphrase (optional)
+            <input name="passphrase" type="password" autocomplete="off" />
+          </label>
+          <label>Local private key (~/.ssh, optional)
+            <select name="keyRef" id="sel-keyref"><option value="">— None —</option></select>
+          </label>
+          <label class="span2">Private key (optional; paste PEM content, use instead of a local key)
+            <textarea name="privateKey" rows="3" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea>
+          </label>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn primary" id="btn-save-server">Save and connect</button>
+          <button type="button" class="btn ghost" id="btn-cancel-server">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ======== Import servers modal ======== -->
+  <div id="import-modal" class="modal-backdrop hidden">
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <h3>Import servers</h3>
+        <button type="button" id="btn-import-close" class="btn ghost small">✕</button>
+      </div>
+      <div class="import-actions">
+        <button type="button" class="btn small" id="btn-import-load-config">Read local ~/.ssh/config</button>
+        <span class="dim" style="font-size:12px">or paste ssh_config content manually</span>
+      </div>
+      <textarea id="import-text" class="import-text" rows="12" placeholder="# Paste ssh_config content, for example:
+Host myserver
+    HostName 192.168.1.10
+    User root
+    Port 22
+    IdentityFile ~/.ssh/id_ed25519"></textarea>
+      <div id="import-preview" class="import-preview hidden"></div>
+      <div class="form-actions">
+        <button type="button" class="btn primary" id="btn-import-confirm" disabled>Import</button>
+        <button type="button" class="btn ghost" id="btn-import-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ======== File editor ======== -->
+  <div id="file-editor-modal" class="modal-backdrop hidden">
+    <div class="modal modal-wide file-editor-modal">
+      <div class="modal-header">
+        <div>
+          <h3 id="file-editor-title">Edit file</h3>
+          <div id="file-editor-path" class="editor-meta"></div>
+        </div>
+        <button type="button" class="btn ghost small" id="btn-file-editor-close">✕</button>
+      </div>
+      <textarea id="file-editor-text" class="file-editor" spellcheck="false" disabled></textarea>
+      <div class="form-actions editor-actions">
+        <span id="file-editor-status" class="editor-status dim"></span>
+        <button type="button" class="btn primary" id="btn-file-editor-save" disabled>Save</button>
+        <button type="button" class="btn ghost" id="btn-file-editor-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ======== User registration modal ======== -->
+  <div id="user-modal" class="modal-backdrop hidden">
+    <div class="modal auth-user-modal">
+      <div class="modal-header">
+        <h3>Register user</h3>
+        <button type="button" class="btn ghost small" id="btn-user-modal-close">✕</button>
+      </div>
+      <form id="user-form" class="auth-form">
+        <label>Username
+          <input name="username" autocomplete="off" minlength="3" maxlength="32" required />
+        </label>
+        <label>Password
+          <input name="password" type="password" autocomplete="new-password" minlength="8" maxlength="128" required />
+        </label>
+        <label>Confirm password
+          <input name="passwordConfirm" type="password" autocomplete="new-password" minlength="8" maxlength="128" required />
+        </label>
+        <div class="form-actions">
+          <button type="submit" class="btn primary">Register</button>
+          <button type="button" class="btn ghost" id="btn-user-modal-cancel">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0.11.0/lib/addon-web-links.min.js"></script>
+  <script src="/app.js?v=20260824-6"></script>
+</body>
+</html>
