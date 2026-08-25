@@ -113,20 +113,26 @@ if (!admin) {
 // the row's user, or the seeded admin for unowned rows) and drop the legacy
 // columns so the servers table holds only the shared server definition.
 const serverColumns = db.prepare('PRAGMA table_info(servers)').all();
-if (serverColumns.some((c) => c.name === 'user_id')) {
+const legacyServerColumns = new Set(serverColumns.map((c) => c.name));
+// A prior migration can be interrupted after it has copied credentials and
+// dropped some (but not all) legacy columns. Only read username/creds when
+// both still exist, then remove every remaining legacy column independently.
+if (legacyServerColumns.has('username') && legacyServerColumns.has('creds')) {
   const insCreds = db.prepare(`
     INSERT OR IGNORE INTO server_creds (server_uid, user_id, username, creds, updated_at)
     VALUES (?, ?, ?, ?, ?)
   `);
   const migrate = db.transaction(() => {
-    for (const r of db.prepare('SELECT uid, user_id, username, creds FROM servers').all()) {
+    const ownerExpr = legacyServerColumns.has('user_id') ? 'user_id' : String(admin.id);
+    for (const r of db.prepare(`SELECT uid, ${ownerExpr} AS user_id, username, creds FROM servers`).all()) {
       insCreds.run(r.uid, r.user_id ?? admin.id, r.username, r.creds || '{}', Date.now());
     }
   });
   migrate();
-  for (const col of ['user_id', 'username', 'creds']) {
-    try { db.exec(`ALTER TABLE servers DROP COLUMN ${col}`); } catch (e) { /* older SQLite: keep column */ }
-  }
+}
+for (const col of ['user_id', 'username', 'creds']) {
+  if (!legacyServerColumns.has(col)) continue;
+  try { db.exec(`ALTER TABLE servers DROP COLUMN ${col}`); } catch (e) { /* older SQLite: keep column */ }
 }
 
 const authSessions = new Map();
