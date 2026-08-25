@@ -57,23 +57,22 @@ db.exec(`
   );
   CREATE TABLE IF NOT EXISTS servers (
     uid TEXT PRIMARY KEY,
-    user_id INTEGER,
     label TEXT NOT NULL,
     host TEXT NOT NULL,
     port INTEGER NOT NULL,
-    username TEXT NOT NULL,
-    creds TEXT NOT NULL DEFAULT '{}',
     algorithms TEXT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS server_creds (
+    server_uid TEXT NOT NULL,
+    user_id INTEGER NOT NULL,
+    username TEXT NOT NULL,
+    creds TEXT NOT NULL DEFAULT '{}',
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (server_uid, user_id)
   )
 `);
-
-// Upgrade databases created before authentication was added.
-const serverColumns = db.prepare('PRAGMA table_info(servers)').all();
-if (!serverColumns.some((c) => c.name === 'user_id')) {
-  db.exec('ALTER TABLE servers ADD COLUMN user_id INTEGER');
-}
 
 function hashPassword(password) {
   const salt = crypto.randomBytes(16);
@@ -105,9 +104,26 @@ if (!admin) {
   stmtSetAdmin.run(admin.id);
   admin = stmtGetUserByName.get(ADMIN_USERNAME);
 }
-// Existing server rows predate users; keep them available to the seeded admin.
-db.prepare('UPDATE servers SET user_id = ? WHERE user_id IS NULL').run(admin.id);
-db.exec('CREATE INDEX IF NOT EXISTS idx_servers_user ON servers (user_id, created_at)');
+// Databases created before per-user credentials stored the SSH username and
+// credentials on the server row itself. Move them into server_creds (owned by
+// the row's user, or the seeded admin for unowned rows) and drop the legacy
+// columns so the servers table holds only the shared server definition.
+const serverColumns = db.prepare('PRAGMA table_info(servers)').all();
+if (serverColumns.some((c) => c.name === 'user_id')) {
+  const insCreds = db.prepare(`
+    INSERT OR IGNORE INTO server_creds (server_uid, user_id, username, creds, updated_at)
+    VALUES (?, ?, ?, ?, ?)
+  `);
+  const migrate = db.transaction(() => {
+    for (const r of db.prepare('SELECT uid, user_id, username, creds FROM servers').all()) {
+      insCreds.run(r.uid, r.user_id ?? admin.id, r.username, r.creds || '{}', Date.now());
+    }
+  });
+  migrate();
+  for (const col of ['user_id', 'username', 'creds']) {
+    try { db.exec(`ALTER TABLE servers DROP COLUMN ${col}`); } catch (e) { /* older SQLite: keep column */ }
+  }
+}
 
 const authSessions = new Map();
 const loginAttempts = new Map();
@@ -214,19 +230,29 @@ app.post('/api/auth/logout', (req, res) => {
   res.json({ ok: true });
 });
 
+function validateNewUser(username, password) {
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{2,31}$/.test(username)) {
+    return 'Username must be 3-32 letters, numbers, dots, underscores, or hyphens';
+  }
+  if (password.length < 8 || password.length > 128) {
+    return 'Password must be 8-128 characters';
+  }
+  return null;
+}
+
+function createUser(username, password) {
+  const result = stmtInsertUser.run(username, hashPassword(password), 0, Date.now());
+  return { id: result.lastInsertRowid, username, isAdmin: false };
+}
+
 app.post('/api/auth/register', (req, res) => {
   if (!req.user?.is_admin) return res.status(403).json({ error: 'Only administrators can register users' });
   const username = typeof req.body?.username === 'string' ? req.body.username.trim() : '';
   const password = typeof req.body?.password === 'string' ? req.body.password : '';
-  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{2,31}$/.test(username)) {
-    return res.status(400).json({ error: 'Username must be 3-32 letters, numbers, dots, underscores, or hyphens' });
-  }
-  if (password.length < 8 || password.length > 128) {
-    return res.status(400).json({ error: 'Password must be 8-128 characters' });
-  }
+  const err = validateNewUser(username, password);
+  if (err) return res.status(400).json({ error: err });
   try {
-    const result = stmtInsertUser.run(username, hashPassword(password), 0, Date.now());
-    res.json({ ok: true, user: { id: result.lastInsertRowid, username, isAdmin: false } });
+    res.json({ ok: true, user: createUser(username, password) });
   } catch (e) {
     if (String(e.message).includes('UNIQUE')) return res.status(409).json({ error: 'Username already exists' });
     res.status(500).json({ error: e.message });
@@ -239,21 +265,123 @@ setInterval(() => {
   for (const [key, entry] of loginAttempts) if (entry.expiresAt <= now && entry.blockedUntil <= now) loginAttempts.delete(key);
 }, 10 * 60 * 1000).unref();
 
+/* ---------------- user management (admin only) ---------------- */
+
+const stmtListUsers = db.prepare('SELECT id, username, is_admin, created_at FROM users ORDER BY created_at, id');
+const stmtCountAdmins = db.prepare('SELECT COUNT(*) AS n FROM users WHERE is_admin = 1');
+const stmtSetAdminFlag = db.prepare('UPDATE users SET is_admin = ? WHERE id = ?');
+const stmtSetPassword = db.prepare('UPDATE users SET password_hash = ? WHERE id = ?');
+const stmtDeleteUser = db.prepare('DELETE FROM users WHERE id = ?');
+const stmtServerCount = db.prepare('SELECT COUNT(*) AS n FROM server_creds WHERE user_id = ?');
+
+function requireAdmin(req, res) {
+  if (!req.user || !req.user.is_admin) {
+    res.status(403).json({ error: 'Only administrators can manage users' });
+    return false;
+  }
+  return true;
+}
+
+function parseUserId(req) {
+  const id = Number(req.params.id);
+  return Number.isInteger(id) && id > 0 ? id : null;
+}
+
+function invalidateUserSessions(userId) {
+  // Force the target to sign in again and drop their live SSH sessions.
+  for (const [token, entry] of [...authSessions]) {
+    if (entry.userId === userId) authSessions.delete(token);
+  }
+  closeUserSshSessions(userId);
+}
+
+app.get('/api/users', (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const users = stmtListUsers.all().map((u) => ({
+    id: u.id,
+    username: u.username,
+    isAdmin: !!u.is_admin,
+    createdAt: u.created_at,
+    serverCount: stmtServerCount.get(u.id).n,
+    sessionCount: [...sessions.values()].filter((s) => s.userId === u.id && s.connected).length,
+  }));
+  res.json({ users });
+});
+
+app.post('/api/users', (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const username = typeof req.body?.username === 'string' ? req.body.username.trim() : '';
+  const password = typeof req.body?.password === 'string' ? req.body.password : '';
+  const err = validateNewUser(username, password);
+  if (err) return res.status(400).json({ error: err });
+  try {
+    res.json({ ok: true, user: createUser(username, password) });
+  } catch (e) {
+    if (String(e.message).includes('UNIQUE')) return res.status(409).json({ error: 'Username already exists' });
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.patch('/api/users/:id', (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const id = parseUserId(req);
+  const target = id ? stmtGetUserById.get(id) : null;
+  if (!target) return res.status(404).json({ error: 'User does not exist' });
+  const b = req.body || {};
+  if (typeof b.password === 'string' && b.password) {
+    const err = validateNewUser(target.username, b.password);
+    if (err) return res.status(400).json({ error: err });
+    stmtSetPassword.run(hashPassword(b.password), target.id);
+    invalidateUserSessions(target.id);
+  }
+  if (typeof b.isAdmin === 'boolean') {
+    if (!b.isAdmin && target.is_admin && stmtCountAdmins.get().n <= 1) {
+      return res.status(400).json({ error: 'Cannot revoke the last administrator' });
+    }
+    stmtSetAdminFlag.run(b.isAdmin ? 1 : 0, target.id);
+  }
+  res.json({ ok: true });
+});
+
+app.delete('/api/users/:id', (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const id = parseUserId(req);
+  const target = id ? stmtGetUserById.get(id) : null;
+  if (!target) return res.status(404).json({ error: 'User does not exist' });
+  if (target.id === req.user.id) {
+    return res.status(400).json({ error: 'You cannot delete your own account' });
+  }
+  invalidateUserSessions(target.id);
+  stmtDeleteCredsByUser.run(target.id);
+  stmtDeleteUser.run(target.id);
+  res.json({ ok: true });
+});
+
 const stmtUpsert = db.prepare(`
-  INSERT INTO servers (uid, user_id, label, host, port, username, creds, algorithms, created_at, updated_at)
-  VALUES (@uid, @user_id, @label, @host, @port, @username, @creds, @algorithms, @now, @now)
+  INSERT INTO servers (uid, label, host, port, algorithms, created_at, updated_at)
+  VALUES (@uid, @label, @host, @port, @algorithms, @now, @now)
   ON CONFLICT(uid) DO UPDATE SET
     label = excluded.label,
     host = excluded.host,
     port = excluded.port,
-    username = excluded.username,
-    creds = excluded.creds,
     algorithms = excluded.algorithms,
     updated_at = excluded.updated_at
 `);
-const stmtGetAll = db.prepare('SELECT * FROM servers WHERE user_id = ? ORDER BY created_at');
-const stmtGetOwner = db.prepare('SELECT user_id FROM servers WHERE uid = ?');
-const stmtDelete = db.prepare('DELETE FROM servers WHERE uid = ? AND user_id = ?');
+const stmtGetAllServers = db.prepare('SELECT * FROM servers ORDER BY created_at');
+const stmtGetServer = db.prepare('SELECT uid FROM servers WHERE uid = ?');
+const stmtDeleteServer = db.prepare('DELETE FROM servers WHERE uid = ?');
+const stmtGetCred = db.prepare('SELECT username, creds FROM server_creds WHERE server_uid = ? AND user_id = ?');
+const stmtUpsertCred = db.prepare(`
+  INSERT INTO server_creds (server_uid, user_id, username, creds, updated_at)
+  VALUES (@server_uid, @user_id, @username, @creds, @now)
+  ON CONFLICT(server_uid, user_id) DO UPDATE SET
+    username = excluded.username,
+    creds = excluded.creds,
+    updated_at = excluded.updated_at
+`);
+const stmtDeleteCred = db.prepare('DELETE FROM server_creds WHERE server_uid = ? AND user_id = ?');
+const stmtDeleteCredsByServer = db.prepare('DELETE FROM server_creds WHERE server_uid = ?');
+const stmtDeleteCredsByUser = db.prepare('DELETE FROM server_creds WHERE user_id = ?');
 
 function safeParse(s, dflt) {
   try { return s ? JSON.parse(s) : dflt; } catch (e) { return dflt; }
@@ -265,37 +393,36 @@ function rowToServer(r) {
     label: r.label,
     host: r.host,
     port: r.port,
-    username: r.username,
-    creds: safeParse(r.creds, {}),
     algorithms: safeParse(r.algorithms, null),
   };
 }
 
+// Servers are shared: every user sees the full list, plus (mine) their own
+// connection info for each server, or null when they have none configured.
 app.get('/api/servers', (req, res) => {
-  res.json({ servers: stmtGetAll.all(req.user.id).map(rowToServer) });
+  const servers = stmtGetAllServers.all().map((r) => {
+    const s = rowToServer(r);
+    const cred = stmtGetCred.get(r.uid, req.user.id);
+    s.mine = cred ? { username: cred.username, creds: safeParse(cred.creds, {}) } : null;
+    return s;
+  });
+  res.json({ servers });
 });
 
+// Server definitions (host/label/port) are admin-managed.
 app.post('/api/servers', (req, res) => {
+  if (!requireAdmin(req, res)) return;
   const b = req.body || {};
-  if (!b.uid || !b.host || !b.username) {
-    return res.status(400).json({ error: 'uid, host, and username are required' });
+  if (!b.uid || !b.host) {
+    return res.status(400).json({ error: 'uid and host are required' });
   }
-  const uid = String(b.uid);
-  const owner = stmtGetOwner.get(uid);
-  if (owner && owner.user_id !== req.user.id) return res.status(403).json({ error: 'You do not have access to this server' });
-  const creds = b.creds && typeof b.creds === 'object' ? b.creds : {};
-  for (const k of Object.keys(creds)) {
-    if (creds[k] != null && typeof creds[k] !== 'string') delete creds[k];
-  }
+  const host = String(b.host);
   try {
     stmtUpsert.run({
-      uid,
-      user_id: req.user.id,
-      label: String(b.label || b.username + '@' + b.host),
-      host: String(b.host),
+      uid: String(b.uid),
+      label: String(b.label || '').trim() || host,
+      host,
       port: Math.min(Math.max(parseInt(b.port || 22, 10) || 22, 1), 65535),
-      username: String(b.username),
-      creds: JSON.stringify(creds),
       algorithms: b.algorithms && typeof b.algorithms === 'object' ? JSON.stringify(b.algorithms) : null,
       now: Date.now(),
     });
@@ -306,7 +433,32 @@ app.post('/api/servers', (req, res) => {
 });
 
 app.delete('/api/servers/:uid', (req, res) => {
-  stmtDelete.run(req.params.uid, req.user.id);
+  if (!requireAdmin(req, res)) return;
+  stmtDeleteCredsByServer.run(req.params.uid);
+  stmtDeleteServer.run(req.params.uid);
+  res.json({ ok: true });
+});
+
+// Per-user connection info (username + password/key) for a shared server.
+app.post('/api/servers/:uid/creds', (req, res) => {
+  const server = stmtGetServer.get(req.params.uid);
+  if (!server) return res.status(404).json({ error: 'Server does not exist' });
+  const b = req.body || {};
+  const username = typeof b.username === 'string' ? b.username.trim() : '';
+  if (!username) return res.status(400).json({ error: 'username is required' });
+  const creds = b.creds && typeof b.creds === 'object' ? b.creds : {};
+  for (const k of Object.keys(creds)) {
+    if (creds[k] != null && typeof creds[k] !== 'string') delete creds[k];
+  }
+  if (!creds.password && !creds.privateKey && !creds.keyRef) {
+    return res.status(400).json({ error: 'A password or private key is required' });
+  }
+  stmtUpsertCred.run({ server_uid: server.uid, user_id: req.user.id, username, creds: JSON.stringify(creds), now: Date.now() });
+  res.json({ ok: true });
+});
+
+app.delete('/api/servers/:uid/creds', (req, res) => {
+  stmtDeleteCred.run(req.params.uid, req.user.id);
   res.json({ ok: true });
 });
 

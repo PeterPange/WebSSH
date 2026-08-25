@@ -23,7 +23,7 @@ const GPU_COLORS = ['#58a6ff', '#3fb950', '#d29922', '#f85149', '#bc8cff', '#39c
 let authFlow = 0;
 
 const state = {
-  servers: [],         // {uid, host, port, username, label, creds, sessionId, connecting}
+  servers: [],         // {uid, host, port, label, algorithms, mine, sessionId, connecting}
   view: 'dashboard',   // 'dashboard' | 'detail'
   activeUid: null,     // server uid in detail view
   activeId: null,      // sessionId of active server
@@ -211,7 +211,9 @@ async function enterApp(user, flow = authFlow) {
   if (flow !== authFlow) return;
   state.currentUser = user;
   $('#current-user').textContent = `${user.isAdmin ? 'Admin · ' : ''}${user.username}`;
-  $('#btn-register-user').classList.toggle('hidden', !user.isAdmin);
+  $('#btn-add-server').classList.toggle('hidden', !user.isAdmin);
+  $('#btn-import-server').classList.toggle('hidden', !user.isAdmin);
+  $('#btn-users').classList.toggle('hidden', !user.isAdmin);
   $('#auth-view').classList.add('hidden');
   $('#app-view').classList.remove('hidden');
 
@@ -238,16 +240,11 @@ async function enterApp(user, flow = authFlow) {
     }
   }
 
-  state.servers = saved.map((s) => ({
-    ...s,
-    creds: s.creds || {},
-    sessionId: null,
-    connecting: false,
-  }));
+  state.servers = saved.map((s) => ({ ...s, mine: s.mine || null, sessionId: null, connecting: false }));
   initThemeSwitcher();
   renderDashboard();
 
-  const withCreds = state.servers.filter((s) => s.creds && (s.creds.password || s.creds.privateKey || s.creds.keyRef));
+  const withCreds = state.servers.filter((s) => hasMyCreds(s));
   for (const s of withCreds) connectServer(s, { silent: true });
   state.pollTimer = setInterval(pollStatus, 5000);
 }
@@ -283,36 +280,123 @@ async function logout() {
   window.location.reload();
 }
 
+$('#btn-logout').onclick = logout;
+
+/* ================= user management (admin) ================= */
+
 function closeUserModal() {
   $('#user-modal').classList.add('hidden');
+  $('#user-form').classList.add('hidden');
+  $('#user-form').reset();
 }
 
-$('#btn-logout').onclick = logout;
-$('#btn-register-user').onclick = () => {
+$('#btn-users').onclick = () => {
+  $('#user-form').classList.add('hidden');
   $('#user-form').reset();
   $('#user-modal').classList.remove('hidden');
+  loadUsers();
 };
 $('#btn-user-modal-close').onclick = closeUserModal;
-$('#btn-user-modal-cancel').onclick = closeUserModal;
+$('#btn-user-modal-cancel').onclick = () => {
+  $('#user-form').classList.add('hidden');
+  $('#user-form').reset();
+};
+$('#btn-user-add-toggle').onclick = () => {
+  const form = $('#user-form');
+  const willOpen = form.classList.contains('hidden');
+  form.classList.toggle('hidden');
+  if (willOpen) form.username.focus();
+};
 $('#user-modal').addEventListener('click', (e) => {
   if (e.target === e.currentTarget) closeUserModal();
 });
+
+async function loadUsers() {
+  const tbody = $('#users-tbody');
+  tbody.innerHTML = '<tr><td colspan="5" class="dim">Loading…</td></tr>';
+  let users;
+  try {
+    users = (await api('/api/users')).users;
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="5" class="dim">${esc(e.message)}</td></tr>`;
+    $('#users-count').textContent = '';
+    return;
+  }
+  const me = state.currentUser?.username;
+  $('#users-count').textContent = `${users.length} user${users.length === 1 ? '' : 's'}`;
+  if (!users.length) {
+    tbody.innerHTML = '<tr><td colspan="5" class="dim">No users</td></tr>';
+    return;
+  }
+  tbody.innerHTML = users.map((u) => `
+    <tr data-id="${u.id}">
+      <td class="mono">${esc(u.username)}${u.username === me ? ' <span class="tag dup">you</span>' : ''}</td>
+      <td>${u.isAdmin ? '<span class="tag admin">Admin</span>' : '<span class="tag dup">User</span>'}</td>
+      <td class="dim">${u.serverCount}${u.sessionCount ? ` · ${u.sessionCount} online` : ''}</td>
+      <td class="dim">${fmtDate(u.createdAt)}</td>
+      <td class="ops">
+        <button class="btn small user-pwd" title="Reset password">Reset password</button>
+        <button class="btn small user-role">${u.isAdmin ? 'Revoke admin' : 'Make admin'}</button>
+        <button class="btn small danger user-del" ${u.username === me ? 'disabled title="You cannot delete your own account"' : 'title="Delete user"'}>Delete</button>
+      </td>
+    </tr>`).join('');
+
+  for (const tr of $$('#users-tbody tr')) {
+    const user = users.find((x) => x.id === Number(tr.dataset.id));
+    if (!user) continue;
+    tr.querySelector('.user-pwd').onclick = async () => {
+      const pwd = prompt(`New password for ${user.username} (8-128 characters):`);
+      if (pwd == null) return;
+      if (pwd.length < 8 || pwd.length > 128) return toast('Password must be 8-128 characters', 'error');
+      try {
+        await api(`/api/users/${user.id}`, { method: 'PATCH', body: JSON.stringify({ password: pwd }) });
+        toast(`Password reset for ${user.username}`, 'ok');
+      } catch (e) {
+        toast('Reset failed: ' + e.message, 'error');
+      }
+    };
+    tr.querySelector('.user-role').onclick = async () => {
+      const makeAdmin = !user.isAdmin;
+      if (!makeAdmin && !confirm(`Revoke admin rights from ${user.username}?`)) return;
+      try {
+        await api(`/api/users/${user.id}`, { method: 'PATCH', body: JSON.stringify({ isAdmin: makeAdmin }) });
+        toast(`${user.username} is now ${makeAdmin ? 'an administrator' : 'a regular user'}`, 'ok');
+        loadUsers();
+      } catch (e) {
+        toast(e.message, 'error');
+      }
+    };
+    tr.querySelector('.user-del').onclick = async () => {
+      const msg = `Delete user "${user.username}"?` +
+        (user.serverCount ? ` Their ${user.serverCount} saved connection record(s) will be deleted.` : '') +
+        ' Any active sessions will be closed.';
+      if (!confirm(msg)) return;
+      try {
+        await api(`/api/users/${user.id}`, { method: 'DELETE' });
+        toast(`User ${user.username} deleted`, 'ok');
+        loadUsers();
+      } catch (e) {
+        toast('Delete failed: ' + e.message, 'error');
+      }
+    };
+  }
+}
+
 $('#user-form').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const form = new FormData(e.currentTarget);
-  const username = String(form.get('username') || '').trim();
-  const password = String(form.get('password') || '');
-  const confirmPassword = String(form.get('passwordConfirm') || '');
+  const form = e.currentTarget;
+  const username = String(form.username.value || '').trim();
+  const password = String(form.password.value || '');
+  const confirmPassword = String(form.passwordConfirm.value || '');
   if (password !== confirmPassword) return toast('Passwords do not match', 'error');
   try {
-    await api('/api/auth/register', {
-      method: 'POST',
-      body: JSON.stringify({ username, password }),
-    });
-    closeUserModal();
-    toast(`User ${username} registered`, 'ok');
+    await api('/api/users', { method: 'POST', body: JSON.stringify({ username, password }) });
+    form.reset();
+    form.classList.add('hidden');
+    toast(`User ${username} created`, 'ok');
+    loadUsers();
   } catch (err) {
-    toast('Registration failed: ' + err.message, 'error');
+    toast('Failed to create user: ' + err.message, 'error');
   }
 });
 
@@ -351,7 +435,7 @@ function newUid() {
 }
 
 function serverLabel(s) {
-  return s.label || `${s.username}@${s.host}`;
+  return s.label || s.host;
 }
 
 /* ================= persistence (server-side SQLite) ================= */
@@ -368,11 +452,14 @@ async function persistServer(server) {
       label: server.label,
       host: server.host,
       port: server.port,
-      username: server.username,
-      creds: server.creds || {},
       algorithms: server.algorithms || null,
     }),
   });
+}
+
+function hasMyCreds(server) {
+  const c = server?.mine?.creds || {};
+  return !!(server?.mine?.username && (c.password || c.privateKey || c.keyRef));
 }
 
 /* ================= server lifecycle ================= */
@@ -383,17 +470,21 @@ function findServer(uid) {
 
 async function connectServer(server, opts = {}) {
   if (server.sessionId || server.connecting) return;
+  if (!hasMyCreds(server)) {
+    if (!opts.silent) toast('No connection information is configured for your account on this server.', 'error');
+    return;
+  }
   server.connecting = true;
   renderDashboard();
   updateDetailStatus();
   try {
-    const creds = server.creds || {};
+    const creds = server.mine.creds || {};
     const data = await api('/api/connect', {
       method: 'POST',
       body: JSON.stringify({
         host: server.host,
         port: server.port,
-        username: server.username,
+        username: server.mine.username,
         password: creds.password,
         privateKey: creds.privateKey,
         keyRef: creds.keyRef || undefined,
@@ -443,6 +534,7 @@ async function disconnectServer(server, opts = {}) {
 }
 
 async function removeServer(server) {
+  if (!state.currentUser?.isAdmin) return;
   const msg = `Delete server “${serverLabel(server)}”?` + (server.sessionId ? ' (it will be disconnected)' : '');
   if (!confirm(msg)) return;
   if (server.sessionId) await disconnectServer(server, { silent: true });
@@ -512,6 +604,8 @@ function renderCard(s) {
         ${barRow(`Disk ${diskPct == null ? '-' : diskPct + '%'}`, diskPct)}
       </div>
       ${sys ? `<div class="card-os">${esc(sys.os)} · ${esc(sys.hostname)} · Up ${fmtUptime(sys.uptimeSec)}</div>` : '<div class="card-os">Failed to collect system information (exec timed out or is unavailable)</div>'}`;
+  } else if (!hasMyCreds(s)) {
+    bodyHtml = `<div class="card-note missing-creds">No account is configured for you on this server. Add your SSH username and credentials to connect.</div>`;
   } else if (s.connecting) {
     bodyHtml = `<div class="card-note">Connecting...</div>`;
   } else {
@@ -526,16 +620,20 @@ function renderCard(s) {
     </div>
     ${bodyHtml}
     <div class="card-actions">
-      ${online ? '<button class="btn small primary" data-act="open">Manage</button>'
-               : `<button class="btn small primary" data-act="connect">${s.connecting ? 'Connecting...' : 'Connect'}</button>`}
+      ${hasMyCreds(s)
+        ? (online ? '<button class="btn small primary" data-act="open">Manage</button>'
+          : `<button class="btn small primary" data-act="connect">${s.connecting ? 'Connecting...' : 'Connect'}</button>`)
+        : '<button class="btn small primary" data-act="my-creds">Set my connection</button>'}
       ${online ? '<button class="btn small" data-act="disconnect">Disconnect</button>' : ''}
-      <button class="btn small" data-act="edit">Edit</button>
-      <button class="btn small danger" data-act="remove">Delete</button>
+      ${hasMyCreds(s) ? '<button class="btn small" data-act="my-creds">My connection</button>' : ''}
+      ${state.currentUser?.isAdmin ? '<button class="btn small" data-act="edit">Edit server</button>' : ''}
+      ${state.currentUser?.isAdmin ? '<button class="btn small danger" data-act="remove">Delete server</button>' : ''}
     </div>`;
 
   card.querySelector('[data-act="open"]')?.addEventListener('click', () => showDetail(s.uid));
   card.querySelector('[data-act="connect"]')?.addEventListener('click', () => connectServer(s));
   card.querySelector('[data-act="disconnect"]')?.addEventListener('click', () => disconnectServer(s));
+  card.querySelector('[data-act="my-creds"]')?.addEventListener('click', () => openCredsModal(s));
   card.querySelector('[data-act="edit"]')?.addEventListener('click', () => openModal(s));
   card.querySelector('[data-act="remove"]')?.addEventListener('click', () => removeServer(s));
   return card;
@@ -682,6 +780,7 @@ async function loadKeyOptions() {
 }
 
 function openModal(server) {
+  if (!state.currentUser?.isAdmin) return;
   editingUid = server ? server.uid : null;
   $('#modal-title').textContent = server ? 'Edit server' : 'Add server';
   const f = $('#server-form');
@@ -691,15 +790,7 @@ function openModal(server) {
     f.label.value = server.label || '';
     f.host.value = server.host;
     f.port.value = server.port;
-    f.username.value = server.username;
-    const c = server.creds || {};
-    f.password.value = c.password || '';
-    f.privateKey.value = c.privateKey || '';
-    f.passphrase.value = c.passphrase || '';
-    f.sudoPassword.value = c.sudoPassword || '';
-    if (c.keyRef) f.keyRef.value = c.keyRef;
   }
-  loadKeyOptions();
   $('#server-modal').classList.remove('hidden');
   setTimeout(() => f.host.focus(), 50);
 }
@@ -720,38 +811,22 @@ $('#server-form').onsubmit = async (e) => {
   e.preventDefault();
   const f = new FormData(e.target);
   const host = f.get('host').trim();
-  const username = f.get('username').trim();
-  const password = f.get('password');
-  const privateKey = (f.get('privateKey') || '').trim();
-  const keyRef = f.get('keyRef') || null;
-  if (!host || !username) return toast('Host and username are required', 'error');
-  if (!password && !privateKey && !keyRef) return toast('Provide a password, private key, or local key', 'error');
-  const creds = {
-    password: password || null,
-    privateKey: privateKey || null,
-    keyRef,
-    passphrase: f.get('passphrase') || null,
-    sudoPassword: f.get('sudoPassword') || null,
-  };
+  if (!host) return toast('Host is required', 'error');
 
   let server;
   if (editingUid) {
     server = findServer(editingUid);
     Object.assign(server, {
-      label: f.get('label').trim() || `${username}@${host}`,
+      label: f.get('label').trim() || host,
       host,
       port: parseInt(f.get('port') || 22, 10),
-      username,
-      creds,
     });
   } else {
     server = {
       uid: newUid(),
-      label: f.get('label').trim() || `${username}@${host}`,
+      label: f.get('label').trim() || host,
       host,
       port: parseInt(f.get('port') || 22, 10),
-      username,
-      creds,
       sessionId: null,
       connecting: false,
     };
@@ -769,9 +844,75 @@ $('#server-form').onsubmit = async (e) => {
     // edit a connected server -> reconnect with new config
     await disconnectServer(server, { silent: true });
     await connectServer(server);
-  } else {
-    await connectServer(server);
   }
+};
+
+let credsServerUid = null;
+
+async function loadCredKeyOptions(selected = null) {
+  const sel = $('#sel-creds-keyref');
+  try {
+    const data = await api('/api/ssh-keys');
+    sel.innerHTML = '<option value="">— None —</option>' + data.keys.map((k) => `<option value="${esc(k)}">${esc(k)}</option>`).join('');
+    if (selected && data.keys.includes(selected)) sel.value = selected;
+  } catch (e) { /* no local keys */ }
+}
+
+function openCredsModal(server) {
+  credsServerUid = server.uid;
+  const f = $('#creds-form');
+  f.reset();
+  const mine = server.mine;
+  $('#creds-modal-title').textContent = `My connection · ${serverLabel(server)}`;
+  if (mine) {
+    f.username.value = mine.username || '';
+    f.password.value = mine.creds?.password || '';
+    f.privateKey.value = mine.creds?.privateKey || '';
+    f.passphrase.value = mine.creds?.passphrase || '';
+    f.sudoPassword.value = mine.creds?.sudoPassword || '';
+    $('#btn-creds-remove').classList.remove('hidden');
+  } else {
+    $('#btn-creds-remove').classList.add('hidden');
+  }
+  loadCredKeyOptions(mine?.creds?.keyRef || null);
+  $('#creds-modal').classList.remove('hidden');
+  setTimeout(() => f.username.focus(), 50);
+}
+
+function closeCredsModal() {
+  $('#creds-modal').classList.add('hidden');
+  credsServerUid = null;
+}
+
+$('#btn-creds-modal-close').onclick = closeCredsModal;
+$('#btn-creds-cancel').onclick = closeCredsModal;
+$('#creds-modal').addEventListener('click', (e) => { if (e.target === e.currentTarget) closeCredsModal(); });
+$('#creds-form').onsubmit = async (e) => {
+  e.preventDefault();
+  const server = findServer(credsServerUid);
+  if (!server) return;
+  const f = new FormData(e.target);
+  const username = String(f.get('username') || '').trim();
+  const creds = { password: f.get('password') || null, privateKey: String(f.get('privateKey') || '').trim() || null, keyRef: f.get('keyRef') || null, passphrase: f.get('passphrase') || null, sudoPassword: f.get('sudoPassword') || null };
+  if (!username) return toast('SSH username is required', 'error');
+  if (!creds.password && !creds.privateKey && !creds.keyRef) return toast('Provide a password, private key, or local key', 'error');
+  try {
+    await api(`/api/servers/${encodeURIComponent(server.uid)}/creds`, { method: 'POST', body: JSON.stringify({ username, creds }) });
+    server.mine = { username, creds };
+    closeCredsModal();
+    renderDashboard();
+    toast('Your connection information was saved', 'ok');
+  } catch (err) { toast(`Failed to save connection information: ${err.message}`, 'error'); }
+};
+$('#btn-creds-remove').onclick = async () => {
+  const server = findServer(credsServerUid);
+  if (!server || !confirm(`Remove your connection information for ${serverLabel(server)}?`)) return;
+  try {
+    if (server.sessionId) await disconnectServer(server, { silent: true });
+    await api(`/api/servers/${encodeURIComponent(server.uid)}/creds`, { method: 'DELETE' });
+    server.mine = null;
+    closeCredsModal(); renderDashboard();
+  } catch (err) { toast(`Failed to remove connection information: ${err.message}`, 'error'); }
 };
 
 /* ================= view switching ================= */
@@ -804,7 +945,7 @@ function showDetail(uid) {
   $('#view-dashboard').classList.add('hidden');
   $('#view-detail').classList.remove('hidden');
   $('#detail-name').textContent = serverLabel(s);
-  $('#detail-meta').textContent = `${s.username}@${s.host}:${s.port}`;
+  $('#detail-meta').textContent = `${s.mine?.username || 'No account'}@${s.host}:${s.port}`;
   updateDetailStatus();
   // reset to terminal tab
   state.activeTab = 'terminal';
@@ -1541,13 +1682,13 @@ function parseSshConfig(text) {
 let importParsed = [];
 
 function openImportModal() {
+  if (!state.currentUser?.isAdmin) return;
   $('#import-text').value = '';
   importParsed = [];
   $('#import-preview').classList.add('hidden');
   $('#btn-import-confirm').disabled = true;
-  $('#btn-import-confirm').textContent = '导入';
+  $('#btn-import-confirm').textContent = 'Import';
   $('#import-modal').classList.remove('hidden');
-  loadKeyOptions();
 }
 
 function closeImportModal() {
@@ -1626,8 +1767,8 @@ $('#btn-import-confirm').onclick = async () => {
   const usable = importParsed.filter((s) => !s._dup);
   const newServers = [];
   for (const s of usable) {
-    if (state.servers.some((x) => x.host === s.host && x.port === s.port && x.username === s.username)) continue;
-    const server = { uid: newUid(), label: s.label, host: s.host, port: s.port, username: s.username, creds: s.creds, algorithms: s.algorithms, sessionId: null, connecting: false };
+    if (state.servers.some((x) => x.host === s.host && x.port === s.port)) continue;
+    const server = { uid: newUid(), label: s.label, host: s.host, port: s.port, algorithms: s.algorithms, mine: { username: s.username, creds: s.creds }, sessionId: null, connecting: false };
     state.servers.push(server);
     newServers.push(server);
   }
@@ -1636,7 +1777,10 @@ $('#btn-import-confirm').onclick = async () => {
     return;
   }
   for (const s of newServers) {
-    try { await persistServer(s); } catch (e) { toast(`保存 ${s.label} 失败: ${e.message}`, 'error'); }
+    try {
+      await persistServer(s);
+      await api(`/api/servers/${encodeURIComponent(s.uid)}/creds`, { method: 'POST', body: JSON.stringify(s.mine) });
+    } catch (e) { toast(`Save ${s.label} failed: ${e.message}`, 'error'); }
   }
   renderDashboard();
   closeImportModal();

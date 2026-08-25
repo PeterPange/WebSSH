@@ -202,6 +202,7 @@ body {
 .card-name { font-weight: 600; font-size: 14px; }
 .card-host { margin-left: auto; font-size: 12px; color: var(--text-dim); }
 .card-note { color: var(--text-dim); font-size: 13px; padding: 6px 0; }
+.missing-creds { color: var(--warn); line-height: 1.45; }
 .card-stats { display: flex; flex-direction: column; gap: 9px; font-size: 12px; }
 .stat { display: flex; justify-content: space-between; align-items: baseline; }
 .stat-label { color: var(--text-dim); }
@@ -372,6 +373,15 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .modal-header h3 { font-size: 15px; }
 .modal-wide { width: 720px; }
 .file-editor-modal { width: 900px; }
+.users-modal { width: 780px; }
+.users-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.users-add-form {
+  margin-bottom: 12px; padding: 14px;
+  background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius);
+}
+.users-table-wrap { max-height: 46vh; }
+.tag.admin { color: var(--accent); background: rgba(88,166,255,.12); }
+.users-hint { margin-top: 10px; font-size: 12px; color: var(--text-dim); }
 .editor-meta { margin-top: 4px; color: var(--text-dim); font: 12px "JetBrains Mono", Consolas, monospace; word-break: break-all; }
 .file-editor {
   display: block; width: 100%; min-height: 52vh; max-height: 68vh; box-sizing: border-box;

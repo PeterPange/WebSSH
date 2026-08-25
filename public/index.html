@@ -42,7 +42,7 @@
       <button id="btn-add-server" class="btn primary">+ Add server</button>
       <div class="auth-user">
         <span id="current-user" class="dim"></span>
-        <button id="btn-register-user" class="btn ghost hidden">Register user</button>
+        <button id="btn-users" class="btn ghost hidden">User management</button>
         <button id="btn-logout" class="btn ghost">Sign out</button>
       </div>
     </div>
@@ -54,7 +54,7 @@
       <div class="empty-box">
         <div class="empty-icon">⬢</div>
         <p>No servers yet</p>
-        <p class="dim">Use “+ Add server” in the upper-right corner to add SSH connection details.</p>
+        <p class="dim">Administrators can add shared SSH servers with “+ Add server” in the upper-right corner.</p>
       </div>
     </div>
     <div id="server-grid" class="server-grid"></div>
@@ -106,20 +106,38 @@
       </div>
       <form id="server-form" class="server-form">
         <div class="grid2">
-          <label>Label (optional)
-            <input name="label" placeholder="Training node 01" autocomplete="off" />
+          <label class="span2">Host IP / domain
+            <input name="host" placeholder="192.168.1.100" required autocomplete="off" />
           </label>
           <label>SSH port
             <input name="port" type="number" value="22" min="1" max="65535" required />
           </label>
-          <label class="span2">Host IP / domain
-            <input name="host" placeholder="192.168.1.100" required autocomplete="off" />
+          <label>Label (optional)
+            <input name="label" placeholder="Training node 01" autocomplete="off" />
           </label>
-          <label>Username
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn primary" id="btn-save-server">Save</button>
+          <button type="button" class="btn ghost" id="btn-cancel-server">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ======== My connection info modal (per user, per server) ======== -->
+  <div id="creds-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 id="creds-modal-title">My connection info</h3>
+        <button type="button" id="btn-creds-modal-close" class="btn ghost small">✕</button>
+      </div>
+      <form id="creds-form" class="server-form">
+        <div class="grid2">
+          <label>SSH username
             <input name="username" placeholder="root" required autocomplete="off" />
           </label>
           <label>Password
-            <input name="password" type="password" placeholder="Use password or private key" autocomplete="new-password" />
+            <input name="password" type="password" placeholder="Use password or private key" autocomplete="current-password" />
           </label>
           <label>Sudo password (optional)
             <input name="sudoPassword" type="password" placeholder="For privileged commands" autocomplete="new-password" />
@@ -127,16 +145,17 @@
           <label>Key passphrase (optional)
             <input name="passphrase" type="password" autocomplete="off" />
           </label>
-          <label>Local private key (~/.ssh, optional)
-            <select name="keyRef" id="sel-keyref"><option value="">— None —</option></select>
+          <label class="span2">Local private key (~/.ssh, optional)
+            <select name="keyRef" id="sel-creds-keyref"><option value="">— None —</option></select>
           </label>
           <label class="span2">Private key (optional; paste PEM content, use instead of a local key)
             <textarea name="privateKey" rows="3" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea>
           </label>
         </div>
         <div class="form-actions">
-          <button type="submit" class="btn primary" id="btn-save-server">Save and connect</button>
-          <button type="button" class="btn ghost" id="btn-cancel-server">Cancel</button>
+          <button type="submit" class="btn primary">Save</button>
+          <button type="button" class="btn ghost" id="btn-creds-cancel">Cancel</button>
+          <button type="button" class="btn ghost hidden" id="btn-creds-remove">Remove my info</button>
         </div>
       </form>
     </div>
@@ -186,14 +205,20 @@ Host myserver
     </div>
   </div>
 
-  <!-- ======== User registration modal ======== -->
+  <!-- ======== User management modal (admin) ======== -->
   <div id="user-modal" class="modal-backdrop hidden">
-    <div class="modal auth-user-modal">
+    <div class="modal users-modal">
       <div class="modal-header">
-        <h3>Register user</h3>
+        <h3>User management</h3>
         <button type="button" class="btn ghost small" id="btn-user-modal-close">✕</button>
       </div>
-      <form id="user-form" class="auth-form">
+
+      <div class="users-toolbar">
+        <button type="button" class="btn small primary" id="btn-user-add-toggle">+ Add user</button>
+        <span class="dim users-count" id="users-count"></span>
+      </div>
+
+      <form id="user-form" class="auth-form users-add-form hidden">
         <label>Username
           <input name="username" autocomplete="off" minlength="3" maxlength="32" required />
         </label>
@@ -204,10 +229,28 @@ Host myserver
           <input name="passwordConfirm" type="password" autocomplete="new-password" minlength="8" maxlength="128" required />
         </label>
         <div class="form-actions">
-          <button type="submit" class="btn primary">Register</button>
+          <button type="submit" class="btn primary">Create user</button>
           <button type="button" class="btn ghost" id="btn-user-modal-cancel">Cancel</button>
         </div>
       </form>
+
+      <div class="file-table-wrap users-table-wrap">
+        <table class="tbl users-tbl">
+          <thead>
+            <tr>
+              <th>Username</th>
+              <th>Role</th>
+              <th>Connection info</th>
+              <th>Created</th>
+              <th class="ops-col">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="users-tbody">
+            <tr><td colspan="5" class="dim">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="users-hint">Deleting a user removes their saved connection information and signs out any active sessions.</div>
     </div>
   </div>
 
@@ -217,6 +260,6 @@ Host myserver
   <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0.11.0/lib/addon-web-links.min.js"></script>
-  <script src="/app.js?v=20260824-6"></script>
+  <script src="/app.js?v=20260825-3"></script>
 </body>
 </html>
