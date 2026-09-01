@@ -89,7 +89,7 @@ def handle_exec(channel, command):
                 b"===HOSTNAME===\nmock-gpu-node\n"
             )
         elif cmd.startswith("ps -o pid=,user= -p"):
-            out = b"1234 admin\n"
+            out = b"1234 testuser\n"
         elif cmd.startswith("ps -o pid=,args= -p"):
             out = b"1234 python /root/projects/train.py --epochs 10 --batch-size 32\n"
         elif cmd.startswith("rm -rf"):
