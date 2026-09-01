@@ -265,11 +265,16 @@ async function enterApp(user, flow = authFlow) {
     }
   }
 
-  state.servers = saved.map((s) => ({ ...s, mine: s.mine || null, sessionId: null, connecting: false }));
+  state.servers = saved.map((s) => {
+    const mine = s.mine || null;
+    const hasCreds = !!(mine?.username && (mine.creds?.password || mine.creds?.privateKey || mine.creds?.keyRef));
+    return { ...s, mine, sessionId: null, connecting: hasCreds };
+  });
   initThemeSwitcher();
   renderDashboard();
 
   const withCreds = state.servers.filter((s) => hasMyCreds(s));
+  for (const s of withCreds) s.connecting = false;
   for (const s of withCreds) connectServer(s, { silent: true });
   state.pollTimer = setInterval(pollStatus, 5000);
 }
@@ -547,6 +552,10 @@ async function connectServer(server, opts = {}) {
     });
     server.sessionId = data.sessionId;
     server.homeDir = data.homeDir || null;
+    try {
+      const st = await api(`/api/status/${data.sessionId}`);
+      if (st.connected) state.status.set(data.sessionId, st);
+    } catch (e) { /* pollStatus will retry */ }
     if (state.view === 'detail' && state.activeUid === server.uid) {
       state.activeId = data.sessionId;
       if (state.activeTab === 'terminal') ensureTerminal(server);
@@ -659,7 +668,7 @@ function renderCard(s) {
   } else if (!hasMyCreds(s)) {
     bodyHtml = `<div class="card-note missing-creds">No account is configured for you on this server. Add your SSH username and credentials to connect.</div>`;
   } else if (s.connecting) {
-    bodyHtml = `<div class="card-note">Connecting...</div>`;
+    bodyHtml = `<div class="card-spinner"><span class="spin"></span>Connecting to server...</div>`;
   } else {
     bodyHtml = `<div class="card-note">Disconnected</div>`;
   }
@@ -674,7 +683,9 @@ function renderCard(s) {
     <div class="card-actions">
       ${hasMyCreds(s)
         ? (online ? '<button class="btn small primary" data-act="open">Manage</button>'
-          : `<button class="btn small primary" data-act="connect">${s.connecting ? 'Connecting...' : 'Connect'}</button>`)
+          : s.connecting
+            ? '<button class="btn small primary" data-act="connect" disabled><span class="btn-spin"></span>Connecting...</button>'
+            : '<button class="btn small primary" data-act="connect">Connect</button>')
         : '<button class="btn small primary" data-act="my-creds">Set my connection</button>'}
       ${online ? '<button class="btn small" data-act="disconnect">Disconnect</button>' : ''}
       ${hasMyCreds(s) ? '<button class="btn small" data-act="my-creds">My connection</button>' : ''}
@@ -1015,9 +1026,9 @@ function updateDetailStatus() {
   const btn = $('#btn-detail-action');
   const st = s.sessionId ? state.status.get(s.sessionId) : null;
   if (s.connecting) {
-    badge.textContent = '◌ Connecting';
+    badge.innerHTML = '<span class="btn-spin"></span> Connecting';
     badge.className = 'status-badge connecting';
-    btn.textContent = 'Connecting...';
+    btn.innerHTML = '<span class="btn-spin"></span>Connecting...';
     btn.className = 'btn primary small';
     btn.disabled = true;
   } else if (s.sessionId) {

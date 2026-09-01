@@ -206,7 +206,40 @@ body {
 .card-top { display: flex; align-items: center; gap: 9px; }
 .card-top .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--danger); flex-shrink: 0; }
 .server-card.online .card-top .dot { background: var(--accent2); box-shadow: 0 0 8px rgba(63,185,80,.9); }
-.server-card.connecting .card-top .dot { background: var(--warn); }
+.server-card.connecting .card-top .dot {
+  background: var(--warn);
+  animation: dot-pulse 1.2s ease-in-out infinite;
+}
+@keyframes dot-pulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(210,153,34,.5); }
+  50% { opacity: .6; box-shadow: 0 0 8px 3px rgba(210,153,34,.35); }
+}
+.card-spinner {
+  display: flex; align-items: center; gap: 10px;
+  color: var(--text-dim); font-size: 13px; padding: 6px 0;
+}
+.card-spinner .spin {
+  width: 18px; height: 18px;
+  border: 2px solid var(--border);
+  border-top-color: var(--warn);
+  border-radius: 50%;
+  animation: card-spin .7s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes card-spin {
+  to { transform: rotate(360deg); }
+}
+.btn-spin {
+  display: inline-block;
+  width: 12px; height: 12px;
+  border: 2px solid rgba(255,255,255,.25);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: card-spin .7s linear infinite;
+  vertical-align: middle;
+  margin-right: 4px;
+}
+.btn[disabled] { opacity: .7; cursor: not-allowed; }
 .card-name { font-weight: 600; font-size: 14px; }
 .card-host { margin-left: auto; font-size: 12px; color: var(--text-dim); }
 .card-note { color: var(--text-dim); font-size: 13px; padding: 6px 0; }
