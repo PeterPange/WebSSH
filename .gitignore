@@ -3,4 +3,5 @@ data/
 dist/
 .env
 exports/
+.qoder/
 test/test_connectivity.js
