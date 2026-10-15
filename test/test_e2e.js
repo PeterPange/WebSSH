@@ -36,7 +36,7 @@ async function main() {
   check('bad login rejected', auth.status === 401);
   auth = await api('/api/auth/login', {
     method: 'POST',
-    body: JSON.stringify({ username: 'admin', password: 'changeme' }),
+    body: JSON.stringify({ username: 'admin', password: 'test-admin-12345' }),
   });
   check('admin login ok', auth.status === 200 && auth.data.user?.isAdmin === true);
   let me = await api('/api/auth/me');
@@ -60,11 +60,13 @@ async function main() {
     method: 'POST',
     body: JSON.stringify({ uid: isolatedUid, label: 'isolated', host: 'isolated.example', port: 22, username: 'user', creds: {} }),
   });
-  check('new user saves own server', reg.status === 200 && reg.data.ok === true);
+  check('regular user cannot add shared server', reg.status === 403);
+  const deniedMonitor = await api('/api/admin/monitor/any');
+  check('regular user cannot access monitoring', deniedMonitor.status === 403);
   await api('/api/auth/logout', { method: 'POST' });
   auth = await api('/api/auth/login', {
     method: 'POST',
-    body: JSON.stringify({ username: 'admin', password: 'changeme' }),
+    body: JSON.stringify({ username: 'admin', password: 'test-admin-12345' }),
   });
   check('admin can log back in', auth.status === 200);
   ownServers = await api('/api/servers');
@@ -111,11 +113,21 @@ async function main() {
   check('uptime 90061s', info.data.uptimeSec === 90061);
   check('hostname', info.data.hostname === 'mock-gpu-node');
 
+  const monitor = await api('/api/admin/monitor/' + id);
+  check('administrator monitor available', monitor.status === 200);
+  check('SSH source visible', monitor.data.connections?.text.includes('198.51.100.7'));
+  check('CPU process owner and utilization', monitor.data.processes?.items[0]?.user === 'trainer' && monitor.data.processes.items[0].cpu === 150.2);
+  check('restricted logs explicitly unavailable', monitor.data.failures?.available === false && monitor.data.failures.error.includes('Permission denied'));
+  check('platform sessions included', monitor.data.webSessions?.[0]?.webUser === 'admin');
+
   console.log('5. files: list (jailed to home)');
   // Default list returns the session's home dir.
   let fl = await api(`/api/files/${id}`);
   const homeDir = fl.data.homeDir;
   check('home listed by default', fl.status === 200 && !!homeDir && Array.isArray(fl.data.items), JSON.stringify(fl.data));
+
+  check('SFTP linked directory accessible', (await api(`/api/files/${id}?path=linked`)).status === 200);
+  check('SFTP external symlink rejected', (await api(`/api/files/${id}?path=outside`)).status === 403);
 
   console.log('6. files: upload + download roundtrip (home-relative)');
   const payload = Buffer.from('web-ssh e2e upload test ' + Date.now());
@@ -152,6 +164,17 @@ async function main() {
   const editedBuf = Buffer.from(await editedDl.arrayBuffer());
   check('saved content matches', editedDl.status === 200 && editedBuf.toString() === externalEdit);
 
+  const jsonBytes = Buffer.from('{"test":"原样上传"}');
+  const jsonUpload = await fetch(`${BASE}/api/files/${id}/upload?path=.&name=data.json`, { method: 'POST', body: jsonBytes, headers: { Cookie: cookie, 'Content-Type': 'application/json' } });
+  check('JSON file upload bypasses body parser', jsonUpload.status === 200);
+  const jsonDownload = await fetch(`${BASE}/api/files/${id}/download?path=data.json`, { headers: { Cookie: cookie } });
+  check('JSON bytes unchanged', Buffer.from(await jsonDownload.arrayBuffer()).equals(jsonBytes));
+  const unicodePath = '新建文件-' + Date.now() + '.txt';
+  const create = await api(`/api/files/${id}/new`, { method: 'POST', body: JSON.stringify({ path: unicodePath }) });
+  check('create empty Unicode file', create.status === 200);
+  const duplicate = await api(`/api/files/${id}/new`, { method: 'POST', body: JSON.stringify({ path: unicodePath }) });
+  check('new file never overwrites existing', duplicate.status === 400);
+
   console.log('7. files: mkdir/rename/delete (home-relative)');
   const uniq = 'e2e_' + Date.now();
   let r = await api(`/api/files/${id}/mkdir`, { method: 'POST', body: JSON.stringify({ path: uniq }) });
@@ -164,6 +187,7 @@ async function main() {
   check('renamed listed', fl.data.items.some((i) => i.name === uniq + '.bin'));
   r = await api(`/api/files/${id}/delete`, { method: 'POST', body: JSON.stringify({ path: uniq + '.bin' }) });
   check('delete file ok', r.status === 200 && r.data.ok);
+  check('deleted file is absent', (await api(`/api/files/${id}`)).data.items.every((i) => i.name !== uniq + '.bin'));
   r = await api(`/api/files/${id}/delete`, { method: 'POST', body: JSON.stringify({ path: uniq }) });
   check('delete dir ok', r.status === 200 && r.data.ok);
 
@@ -195,7 +219,7 @@ async function main() {
   r = await api('/api/exec', { method: 'POST', body: JSON.stringify({ sessionId: id, command: 'whoami' }) });
   check('exec ok', r.status === 200 && r.data.stdout.includes('mock-exec: whoami'), JSON.stringify(r.data));
   r = await api('/api/exec', { method: 'POST', body: JSON.stringify({ sessionId: id, command: 'whoami', sudo: true }) });
-  check('sudo exec wraps password', r.status === 200 && r.data.stdout.includes("echo 's3cret' | sudo -S"), JSON.stringify(r.data));
+  check('sudo uses stdin without exposing password in command', r.status === 200 && r.data.stdout.includes("sudo -S -p '' -- sh -c 'whoami'") && !r.data.stdout.includes('s3cret'), JSON.stringify(r.data));
   r = await api('/api/exec', { method: 'POST', body: JSON.stringify({ sessionId: 'nope', command: 'whoami' }) });
   check('exec bad session 404', r.status === 404);
 

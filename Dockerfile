@@ -10,7 +10,7 @@ RUN apt-get update \
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
-COPY server.js ./
+COPY server.js monitoring.js security.js disk-usage.js ./
 COPY public ./public
 
 RUN mkdir -p /data && chown -R node:node /app /data

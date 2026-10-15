@@ -619,3 +619,80 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
   .status-badge { margin-left: auto; }
   .gpu-stats { gap: 8px 12px; }
 }
+
+.admin-monitor { margin-top: 24px; }
+.admin-monitor h4 { margin: 20px 0 8px; }
+.monitor-output { overflow: auto; max-height: 300px; padding: 12px; background: var(--bg); white-space: pre; }
+
+/* SSH audit: status text accompanies every colour indicator. */
+.audit-normal { --audit-color: #16865d; --audit-bg: rgba(22, 134, 93, .10); }
+.audit-warning { --audit-color: #b57806; --audit-bg: rgba(214, 151, 20, .14); }
+.audit-critical { --audit-color: #df4545; --audit-bg: rgba(223, 69, 69, .12); }
+.audit-unknown { --audit-color: #8793a5; --audit-bg: rgba(135, 147, 165, .12); }
+.audit-badge { display: inline-flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 8px; color: var(--audit-color); background: var(--audit-bg); font-weight: 600; }
+.ssh-audit { border: 1px solid var(--audit-color); border-left-width: 5px; border-radius: 12px; padding: 20px; margin-bottom: 20px; }
+.audit-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.audit-heading h3 { margin: 0 0 8px; }
+.audit-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 20px 0; }
+.audit-metric { border-radius: 10px; background: var(--audit-bg); padding: 14px; }
+.audit-metric span { display: block; font-size: 12px; }
+.audit-metric strong { display: block; font-size: 28px; margin-top: 8px; }
+.audit-findings p { margin: 8px 0; }
+.audit-incomplete { color: #8793a5; }
+.audit-frequency { position: relative; min-width: 70px; padding: 4px 8px; }
+.audit-frequency i { position: absolute; inset: 0 auto 0 0; background: rgba(223, 69, 69, .18); border-radius: 4px; }
+.audit-frequency span { position: relative; }
+.audit-source-warning { background: rgba(214, 151, 20, .07); }
+.audit-source-critical { background: rgba(223, 69, 69, .07); }
+.audit-rules, .audit-raw { margin: 16px 0; font-size: 13px; line-height: 1.7; }
+.audit-rules summary, .audit-raw summary { cursor: pointer; }
+@media (max-width: 600px) { .ssh-audit { padding: 12px; } .audit-metrics { gap: 6px; } .audit-metric { padding: 8px; } .audit-metric strong { font-size: 24px; } }
+.admin-monitor { margin-bottom: 24px; }
+.admin-monitor table { width: 100%; border-collapse: collapse; text-align: left; }
+.admin-monitor th, .admin-monitor td { padding: 10px 12px; border-bottom: 1px solid rgba(135, 147, 165, .15); }
+.admin-monitor th { font-size: 12px; white-space: nowrap; }
+.audit-incomplete { overflow-wrap: anywhere; }
+
+.audit-light { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; padding: 4px 2px; border: 0; border-radius: 4px; background: transparent; color: var(--text-dim); font: inherit; font-size: 11px; cursor: pointer; }
+.audit-light-dot { width: 8px; height: 8px; flex-shrink: 0; border-radius: 50%; background: var(--audit-color); box-shadow: 0 0 5px var(--audit-bg); }
+.audit-light:hover, .audit-light:focus-visible { background: var(--audit-bg); color: var(--audit-color); }
+.audit-light:focus-visible { outline: 2px solid var(--audit-color); outline-offset: 2px; }
+.audit-light[aria-disabled="true"] { cursor: default; }
+.card-top .card-name, .card-top .card-host { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.terminal-toolbar { display: flex; align-items: center; gap: 10px; padding: 8px; border-bottom: 1px solid var(--border); }
+.terminal-tabs { display: flex; gap: 6px; overflow-x: auto; min-width: 0; flex: 1; }
+.terminal-tab { display: flex; flex-shrink: 0; border: 1px solid var(--border); border-radius: 6px; }
+.terminal-tab.selected { border-color: var(--accent); background: var(--bg-card); }
+.terminal-tab button { border: 0; background: transparent; color: var(--text-dim); padding: 6px 10px; cursor: pointer; white-space: nowrap; }
+.terminal-tab.selected button { color: var(--text); }
+.terminal-tab .terminal-tab-close { padding: 6px 8px; }
+.terminal-tab-close:hover { color: var(--danger); }
+#btn-new-terminal { flex-shrink: 0; }
+
+.file-list-help { color: var(--text-dim); font-size: 12px; margin: 0 0 10px; }
+.file-open { display: inline-flex; align-items: center; gap: 7px; max-width: 100%; padding: 5px 0; border: 0; background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.file-open > span:nth-child(2) { overflow-wrap: anywhere; }
+.file-open:hover > span:nth-child(2) { text-decoration: underline; }
+.file-open:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 3px; }
+.file-folder { color: var(--accent); font-weight: 600; }
+.file-action-hint { font-size: 11px; color: var(--text-dim); white-space: nowrap; margin-left: 4px; }
+.file-kind { white-space: nowrap; }
+.file-error { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; border: 1px solid var(--danger); border-radius: 6px; padding: 10px; margin-bottom: 12px; }
+.file-error span { flex: 1; min-width: 180px; }
+#files-container[aria-busy="true"] .file-table-wrap { opacity: .6; }
+
+.disk-dialog { width: min(850px, calc(100vw - 32px)); max-height: 85vh; box-sizing: border-box; overflow: auto; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 12px; padding: 20px; }
+.disk-dialog::backdrop { background: rgba(0,0,0,.6); }
+.disk-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.disk-heading h3 { margin: 0; overflow-wrap: anywhere; }
+.disk-dialog p { line-height: 1.65; margin: 14px 0; }
+.disk-totals { display: flex; flex-wrap: wrap; gap: 12px 24px; }
+.disk-total-bar { margin-top: 12px; }
+.disk-partial { border-left: 3px solid #d29922; padding-left: 12px; }
+.disk-filter { display: block; margin: 14px 0; }
+.disk-user-meter { display: flex; align-items: center; gap: 12px; min-width: 150px; }
+.disk-user-meter .bar { flex: 1; }
+.disk-user-meter span { min-width: 48px; text-align: right; }
+.disk-users-table { width: 100%; }
+.disk-users-table td:first-child { overflow-wrap: anywhere; }

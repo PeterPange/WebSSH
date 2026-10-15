@@ -53,7 +53,9 @@ const state = {
   activeUid: null,     // server uid in detail view
   activeId: null,      // sessionId of active server
   activeTab: 'terminal',
-  terminals: new Map(),// sessionId -> {term, fit, ws, el, status, uid}
+  terminals: new Map(),// terminalId -> independent shell and xterm instance
+  activeTerminals: new Map(), // sessionId -> selected terminalId
+  terminalSequence: 0,
   status: new Map(),   // sessionId -> {connected, gpu, system, ts}
   gpuHistory: new Map(),// sessionId -> [{t, utils:[], mems:[]}]
   sysHistory: [],
@@ -210,15 +212,13 @@ async function api(url, opts = {}) {
 }
 
 function showLoginPage() {
+  document.getElementById('disk-usage-dialog')?.close();
   authFlow += 1;
   clearTimers();
   if (state.pollTimer) clearInterval(state.pollTimer);
   state.pollTimer = null;
-  for (const [, terminal] of state.terminals) {
-    try { terminal.ws.close(); } catch (e) { /* ignore */ }
-    terminal.el.remove();
-  }
-  state.terminals.clear();
+  for (const id of [...state.terminals.keys()]) disposeTerminal(id);
+  state.activeTerminals.clear();
   state.status.clear();
   state.gpuHistory.clear();
   state.sysHistory = [];
@@ -324,7 +324,6 @@ $('#btn-change-password').onclick = () => {
 };
 $('#btn-change-password-close').onclick = closeChangePasswordModal;
 $('#btn-change-password-cancel').onclick = closeChangePasswordModal;
-$('#change-password-modal').addEventListener('click', (e) => { if (e.target === e.currentTarget) closeChangePasswordModal(); });
 $('#change-password-form').onsubmit = async (e) => {
   e.preventDefault();
   const form = e.currentTarget;
@@ -364,9 +363,6 @@ $('#btn-user-add-toggle').onclick = () => {
   form.classList.toggle('hidden');
   if (willOpen) form.username.focus();
 };
-$('#user-modal').addEventListener('click', (e) => {
-  if (e.target === e.currentTarget) closeUserModal();
-});
 
 async function loadUsers() {
   const tbody = $('#users-tbody');
@@ -402,9 +398,9 @@ async function loadUsers() {
     const user = users.find((x) => x.id === Number(tr.dataset.id));
     if (!user) continue;
     tr.querySelector('.user-pwd').onclick = async () => {
-      const pwd = prompt(`New password for ${user.username} (8-128 characters):`);
+      const pwd = prompt(`New password for ${user.username} (12-128 characters):`);
       if (pwd == null) return;
-      if (pwd.length < 8 || pwd.length > 128) return toast('Password must be 8-128 characters', 'error');
+      if (pwd.length < 12 || pwd.length > 128) return toast('Password must be 12-128 characters', 'error');
       try {
         await api(`/api/users/${user.id}`, { method: 'PATCH', body: JSON.stringify({ password: pwd }) });
         toast(`Password reset for ${user.username}`, 'ok');
@@ -576,18 +572,14 @@ async function disconnectServer(server, opts = {}) {
   server.connecting = false;
   if (sid) {
     try { await fetch('/api/sessions/' + sid, { method: 'DELETE' }); } catch (e) { /* ignore */ }
-    const t = state.terminals.get(sid);
-    if (t) {
-      try { t.ws.close(); } catch (e) { /* ignore */ }
-      t.el.remove();
-      state.terminals.delete(sid);
-    }
+    disposeSessionTerminals(sid);
     state.status.delete(sid);
     state.gpuHistory.delete(sid);
   }
   if (state.activeId === sid) {
     closeFileEditor(true);
     state.activeId = null;
+    renderTerminalTabs();
   }
   if (!opts.silent) toast(`Disconnected from ${serverLabel(server)}`);
   renderDashboard();
@@ -634,6 +626,7 @@ function renderCard(s) {
   const online = !!(sid && st && st.connected);
   const card = document.createElement('div');
   card.className = 'server-card ' + (online ? 'online' : s.connecting ? 'connecting' : 'offline');
+  const audit = auditState(s);
 
   let bodyHtml;
   if (online && st) {
@@ -678,6 +671,7 @@ function renderCard(s) {
       <span class="dot"></span>
       <span class="card-name">${esc(serverLabel(s))}</span>
       <span class="card-host">${esc(s.host)}:${s.port}</span>
+      ${state.currentUser?.isAdmin ? `<button type="button" class="audit-light audit-${audit.level}" data-act="audit" aria-disabled="${!online}" aria-label="SSH 安全：${auditLabels[audit.level]}。${esc(audit.message)}" title="SSH 安全：${auditLabels[audit.level]} · ${esc(audit.message)}${online ? ' · 点击查看详情' : ''}"><span class="audit-light-dot" aria-hidden="true"></span><span>安全</span></button>` : ''}
     </div>
     ${bodyHtml}
     <div class="card-actions">
@@ -693,6 +687,11 @@ function renderCard(s) {
       ${state.currentUser?.isAdmin ? '<button class="btn small danger" data-act="remove">Delete server</button>' : ''}
     </div>`;
 
+  card.querySelector('[data-act="audit"]')?.addEventListener('click', () => {
+    if (!online) return;
+    showDetail(s.uid);
+    $('#tabs [data-tab="system"]').click();
+  });
   card.querySelector('[data-act="open"]')?.addEventListener('click', () => showDetail(s.uid));
   card.querySelector('[data-act="connect"]')?.addEventListener('click', () => connectServer(s));
   card.querySelector('[data-act="disconnect"]')?.addEventListener('click', () => disconnectServer(s));
@@ -704,26 +703,36 @@ function renderCard(s) {
 
 /* status polling (dashboard overview) */
 
+let statusPollPending = false;
 async function pollStatus() {
+  if (statusPollPending) return;
   const targets = state.servers.filter((s) => s.sessionId);
   if (!targets.length) return;
+  statusPollPending = true;
   await Promise.all(targets.map(async (s) => {
+    const sessionId = s.sessionId;
     try {
-      const data = await api(`/api/status/${s.sessionId}`);
+      const [data, monitor] = await Promise.all([
+        api(`/api/status/${sessionId}`),
+        state.currentUser?.isAdmin ? api(`/api/admin/monitor/${sessionId}`).catch((e) => ({ error: e.message })) : Promise.resolve(null),
+      ]);
+      if (s.sessionId !== sessionId) return;
+      if (monitor) s.auditMonitor = { ...monitor, sessionId };
+      if (data.connected) s.statusError = false;
       if (data.connected) {
         state.status.set(s.sessionId, data);
       } else {
         // SSH session died on server side
         const sid = s.sessionId;
         s.sessionId = null;
-        const t = state.terminals.get(sid);
-        if (t) { t.el.remove(); state.terminals.delete(sid); }
+        disposeSessionTerminals(sid);
         state.status.delete(sid);
         state.gpuHistory.delete(sid);
-        if (state.activeId === sid) state.activeId = null;
+        if (state.activeId === sid) { state.activeId = null; renderTerminalTabs(); }
       }
-    } catch (e) { /* transient network error: keep last known state */ }
+    } catch (e) { s.statusError = true; }
   }));
+  statusPollPending = false;
   if (state.view === 'dashboard') renderDashboard();
   else updateDetailStatus();
 }
@@ -735,12 +744,18 @@ let editingUid = null;
 let editingFilePath = null;
 let fileEditorVersion = null;
 let fileEditorDirty = false;
+let fileEditorSession = null;
+let fileEditorRequest = 0;
 
 function fileNameFromPath(filePath) {
   return filePath.split('/').filter(Boolean).pop() || filePath;
 }
 
 async function openFileEditor(filePath) {
+  if (fileEditorDirty && !confirm('当前文件有未保存的修改，放弃修改并打开另一个文件？')) return;
+  const request = ++fileEditorRequest;
+  const sessionId = state.activeId;
+  fileEditorSession = sessionId;
   const modal = $('#file-editor-modal');
   const text = $('#file-editor-text');
   const save = $('#btn-file-editor-save');
@@ -755,8 +770,8 @@ async function openFileEditor(filePath) {
   save.disabled = true;
   modal.classList.remove('hidden');
   try {
-    const data = await api(fileUrl(`/edit?path=${encodeURIComponent(filePath)}`));
-    if (editingFilePath !== filePath) return;
+    const data = await api(`/api/files/${sessionId}/edit?path=${encodeURIComponent(filePath)}`);
+    if (fileEditorRequest !== request || state.activeId !== sessionId) return;
     text.value = data.content;
     fileEditorVersion = data.version || null;
     text.disabled = false;
@@ -764,9 +779,9 @@ async function openFileEditor(filePath) {
     $('#file-editor-status').textContent = 'No changes';
     text.focus();
   } catch (e) {
-    if (editingFilePath === filePath) {
+    if (fileEditorRequest === request && state.activeId === sessionId) {
       closeFileEditor(true);
-      toast('Failed to open file: ' + e.message, 'error');
+      toast('无法编辑文件：' + friendlyFileError(e), 'error');
     }
   }
 }
@@ -774,6 +789,8 @@ async function openFileEditor(filePath) {
 function closeFileEditor(force = false) {
   if (!force && fileEditorDirty && !confirm('The file has unsaved changes. Close the editor?')) return;
   editingFilePath = null;
+  fileEditorSession = null;
+  fileEditorRequest++;
   fileEditorVersion = null;
   fileEditorDirty = false;
   $('#file-editor-modal').classList.add('hidden');
@@ -782,35 +799,36 @@ function closeFileEditor(force = false) {
 
 async function saveFileEditor() {
   const filePath = editingFilePath;
-  if (!filePath) return;
+  const sessionId = fileEditorSession;
+  const request = fileEditorRequest;
+  if (!filePath || !sessionId || state.activeId !== sessionId) return;
   const save = $('#btn-file-editor-save');
   const text = $('#file-editor-text');
+  const submitted = text.value;
   save.disabled = true;
   $('#file-editor-status').textContent = 'Saving...';
   try {
-    const data = await api(fileUrl('/edit'), {
+    const data = await api(`/api/files/${sessionId}/edit`, {
       method: 'POST',
-      body: JSON.stringify({ path: filePath, content: text.value, version: fileEditorVersion }),
+      body: JSON.stringify({ path: filePath, content: submitted, version: fileEditorVersion }),
     });
-    if (editingFilePath !== filePath) return;
+    if (fileEditorRequest !== request || state.activeId !== sessionId) return;
     fileEditorVersion = data.version || fileEditorVersion;
-    fileEditorDirty = false;
-    $('#file-editor-status').textContent = 'Saved';
+    fileEditorDirty = text.value !== submitted;
+    $('#file-editor-status').textContent = fileEditorDirty ? '本次提交已保存，仍有新的未保存修改' : 'Saved';
     toast('File saved', 'ok');
     loadDir(state.currentPath);
   } catch (e) {
+    if (fileEditorRequest !== request || state.activeId !== sessionId) return;
     $('#file-editor-status').textContent = e.status === 409 ? 'Remote file changed' : 'Save failed';
     toast('Failed to save file: ' + e.message, 'error');
   } finally {
-    if (editingFilePath === filePath) save.disabled = false;
+    if (fileEditorRequest === request && state.activeId === sessionId) save.disabled = false;
   }
 }
 
 $('#btn-file-editor-close').onclick = () => closeFileEditor();
 $('#btn-file-editor-cancel').onclick = () => closeFileEditor();
-$('#file-editor-modal').addEventListener('click', (e) => {
-  if (e.target === e.currentTarget) closeFileEditor();
-});
 $('#file-editor-text').addEventListener('input', () => {
   fileEditorDirty = true;
   $('#file-editor-status').textContent = 'Unsaved changes';
@@ -835,7 +853,7 @@ async function loadKeyOptions() {
   const sel = $('#sel-keyref');
   const current = sel.value;
   try {
-    const data = await api('/api/ssh-keys');
+    const data = state.currentUser?.isAdmin ? await api('/api/ssh-keys') : { keys: [] };
     sel.innerHTML = '<option value="">— None —</option>' +
       data.keys.map((k) => `<option value="${esc(k)}">${esc(k)}</option>`).join('');
     if (current && data.keys.includes(current)) sel.value = current;
@@ -864,11 +882,10 @@ function closeModal() {
 }
 
 $('#btn-add-server').onclick = () => openModal(null);
+// Form dialogs intentionally ignore backdrop clicks, including clicks generated
+// by selecting text inside the dialog and releasing the pointer outside it.
 $('#btn-modal-close').onclick = closeModal;
 $('#btn-cancel-server').onclick = closeModal;
-$('#server-modal').addEventListener('click', (e) => {
-  if (e.target === e.currentTarget) closeModal();
-});
 
 $('#server-form').onsubmit = async (e) => {
   e.preventDefault();
@@ -915,7 +932,7 @@ let credsServerUid = null;
 async function loadCredKeyOptions(selected = null) {
   const sel = $('#sel-creds-keyref');
   try {
-    const data = await api('/api/ssh-keys');
+    const data = state.currentUser?.isAdmin ? await api('/api/ssh-keys') : { keys: [] };
     sel.innerHTML = '<option value="">— None —</option>' + data.keys.map((k) => `<option value="${esc(k)}">${esc(k)}</option>`).join('');
     if (selected && data.keys.includes(selected)) sel.value = selected;
   } catch (e) { /* no local keys */ }
@@ -949,7 +966,6 @@ function closeCredsModal() {
 
 $('#btn-creds-modal-close').onclick = closeCredsModal;
 $('#btn-creds-cancel').onclick = closeCredsModal;
-$('#creds-modal').addEventListener('click', (e) => { if (e.target === e.currentTarget) closeCredsModal(); });
 $('#creds-form').onsubmit = async (e) => {
   e.preventDefault();
   const server = findServer(credsServerUid);
@@ -1090,28 +1106,79 @@ function clearTimers() {
 
 /* ================= terminal ================= */
 
-function disposeTerminal(sessionId) {
-  const entry = state.terminals.get(sessionId);
+function disposeTerminal(terminalId) {
+  const entry = state.terminals.get(terminalId);
   if (!entry) return;
+  state.terminals.delete(terminalId);
+  entry.ws.onopen = entry.ws.onclose = entry.ws.onmessage = entry.ws.onerror = null;
   try { entry.ws.close(); } catch (e) { /* ignore */ }
+  entry.term.dispose();
   entry.el.remove();
-  state.terminals.delete(sessionId);
 }
 
-// An SSH transport can stay connected without allocating an interactive shell.
-// Create that shell only when the user actually opens the terminal tab. This
-// avoids remote servers timing out invisible terminals opened on the dashboard.
-function ensureTerminal(server) {
-  const sessionId = server?.sessionId;
-  if (!sessionId) return null;
-  const existing = state.terminals.get(sessionId);
-  if (!existing || existing.status === 'closed') {
-    if (existing) disposeTerminal(sessionId);
-    createTerminal(server, sessionId);
+function disposeSessionTerminals(sessionId) {
+  for (const [id, entry] of state.terminals) {
+    if (entry.sessionId === sessionId) disposeTerminal(id);
   }
-  showTerminal(sessionId);
-  return state.terminals.get(sessionId) || null;
+  state.activeTerminals.delete(sessionId);
+  renderTerminalTabs();
 }
+
+function sessionTerminals(sessionId) {
+  return [...state.terminals.values()].filter((entry) => entry.sessionId === sessionId);
+}
+
+function renderTerminalTabs() {
+  const tabs = $('#terminal-tabs');
+  const selected = state.activeTerminals.get(state.activeId);
+  tabs.innerHTML = '';
+  for (const entry of sessionTerminals(state.activeId)) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'terminal-tab' + (entry.id === selected ? ' selected' : '');
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.setAttribute('role', 'tab');
+    button.setAttribute('aria-selected', String(entry.id === selected));
+    button.textContent = entry.title + (entry.status === 'closed' ? ' · 已结束' : entry.status === 'connecting' ? ' · 连接中' : '');
+    button.onclick = () => showTerminal(entry.id);
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'terminal-tab-close';
+    close.textContent = '×';
+    close.title = '关闭此终端（会结束该 shell）';
+    close.setAttribute('aria-label', '关闭' + entry.title);
+    close.onclick = () => {
+      const entries = sessionTerminals(entry.sessionId);
+      const index = entries.indexOf(entry);
+      const wasSelected = state.activeTerminals.get(entry.sessionId) === entry.id;
+      disposeTerminal(entry.id);
+      if (wasSelected) {
+        const next = entries[index + 1] || entries[index - 1];
+        if (next) showTerminal(next.id);
+        else state.activeTerminals.delete(entry.sessionId);
+      }
+      renderTerminalTabs();
+    };
+    wrapper.append(button, close);
+    tabs.appendChild(wrapper);
+  }
+  $('#btn-new-terminal').disabled = !state.activeId;
+  $('#terminal-empty').classList.toggle('hidden', sessionTerminals(state.activeId).length > 0);
+}
+
+function ensureTerminal(server) {
+  if (!server?.sessionId) return null;
+  const entries = sessionTerminals(server.sessionId);
+  const selected = state.activeTerminals.get(server.sessionId);
+  const entry = entries.find((t) => t.id === selected) || entries[0] || createTerminal(server, server.sessionId);
+  showTerminal(entry.id);
+  return entry;
+}
+
+$('#btn-new-terminal').onclick = () => {
+  const server = findServer(state.activeUid);
+  if (server?.sessionId) showTerminal(createTerminal(server, server.sessionId).id);
+};
 
 function createTerminal(server, sessionId) {
   const term = new Terminal({
@@ -1135,12 +1202,16 @@ function createTerminal(server, sessionId) {
   const ws = new WebSocket(
     `${proto}://${location.host}/ws/terminal?sessionId=${sessionId}&cols=${term.cols}&rows=${term.rows}`
   );
-  const entry = { term, fit, ws, el, status: 'connecting', uid: server.uid };
-  state.terminals.set(sessionId, entry);
+  const id = 'terminal-' + (++state.terminalSequence);
+  server.terminalCount = (server.terminalCount || 0) + 1;
+  const entry = { id, sessionId, title: '终端 ' + server.terminalCount, term, fit, ws, el, status: 'connecting', uid: server.uid };
+  state.terminals.set(id, entry);
 
-  ws.onopen = () => { entry.status = 'open'; };
+  ws.onopen = () => { /* Wait for the remote shell ready message. */ };
+  ws.onerror = () => { term.write('\r\n[终端连接失败]\r\n'); };
   ws.onclose = () => {
     entry.status = 'closed';
+    renderTerminalTabs();
     term.write('\r\n\x1b[33m[Connection closed]\x1b[0m\r\n');
   };
   ws.onmessage = (ev) => {
@@ -1148,32 +1219,44 @@ function createTerminal(server, sessionId) {
     let obj = null;
     try { obj = JSON.parse(txt); } catch (e) { /* raw */ }
     if (obj && typeof obj === 'object' && (obj.type === 'ready' || obj.type === 'error')) {
+      if (obj.type === 'ready') { entry.status = 'open'; renderTerminalTabs(); }
       if (obj.type === 'error') term.write('\r\n\x1b[31m' + obj.message + '\x1b[0m\r\n');
       return;
     }
     term.write(txt);
   };
   term.onData((data) => {
-    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'input', data }));
+    if (ws.readyState !== WebSocket.OPEN) return;
+    // Keep pasted text within the server's per-message cap without splitting
+    // a UTF-16 surrogate pair across two SSH writes.
+    for (let offset = 0; offset < data.length;) {
+      let end = Math.min(offset + 8192, data.length);
+      if (end < data.length && /[\uD800-\uDBFF]/.test(data[end - 1])) end++;
+      ws.send(JSON.stringify({ type: 'input', data: data.slice(offset, end) }));
+      offset = end;
+    }
   });
   term.onResize(({ cols, rows }) => {
     if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'resize', cols, rows }));
   });
+  return entry;
 }
 
-function showTerminal(sessionId) {
-  for (const [sid, t] of state.terminals) t.el.classList.toggle('active', sid === sessionId);
-  const t = state.terminals.get(sessionId);
-  if (t) {
-    requestAnimationFrame(() => {
-      try { t.fit.fit(); } catch (e) { /* ignore */ }
-      t.term.focus();
-    });
-  }
+function showTerminal(terminalId) {
+  const entry = state.terminals.get(terminalId);
+  if (!entry || entry.sessionId !== state.activeId) return;
+  state.activeTerminals.set(entry.sessionId, terminalId);
+  for (const [id, t] of state.terminals) t.el.classList.toggle('active', id === terminalId);
+  renderTerminalTabs();
+  requestAnimationFrame(() => {
+    if (!state.terminals.has(terminalId) || state.activeTerminals.get(state.activeId) !== terminalId) return;
+    try { entry.fit.fit(); } catch (e) { /* ignore */ }
+    if (state.view === 'detail' && state.activeTab === 'terminal') entry.term.focus();
+  });
 }
 
 window.addEventListener('resize', () => {
-  const t = state.terminals.get(state.activeId);
+  const t = state.terminals.get(state.activeTerminals.get(state.activeId));
   if (t && state.view === 'detail' && state.activeTab === 'terminal') {
     try { t.fit.fit(); } catch (e) { /* ignore */ }
   }
@@ -1355,24 +1438,65 @@ function fileUrl(p) {
   return `/api/files/${state.activeId}` + p;
 }
 
+let directoryRequest = 0;
+function fileAction(item) {
+  if (item.isDirectory) return { label: '文件夹', action: '进入文件夹', icon: '📁', edit: false };
+  const text = /(?:\.(?:txt|md|markdown|log|json|jsonl|yaml|yml|toml|ini|conf|cfg|csv|tsv|xml|html|css|js|jsx|ts|tsx|py|sh|bash|zsh|sql|c|h|cpp|hpp|rs|go|java|r|tex|env|gitignore)|^(?:README|LICENSE|Makefile|Dockerfile|\.bashrc|\.zshrc|\.profile|\.env))$/i.test(item.name);
+  const binary = /\.(?:zip|gz|tar|bz2|xz|7z|rar|png|jpe?g|gif|webp|ico|pdf|mp4|mp3|wav|avi|exe|so|bin|pt|pth|ckpt|safetensors|npy|npz|parquet|docx?|xlsx?|pptx?)$/i.test(item.name);
+  return { label: text ? '文本文件' : '文件', action: text && item.size <= 1048576 ? '打开文本编辑' : '下载文件', icon: text ? '📝' : '📄', edit: !binary && item.size <= 1048576 };
+}
+function validFileName(name) {
+  if (!name || name === '.' || name === '..' || /[\/\\\0]/.test(name)) {
+    toast('请输入一个文件名，不要包含路径、斜杠或 ..', 'error');
+    return false;
+  }
+  return true;
+}
+function friendlyFileError(error) {
+  const message = error.message || '未知错误';
+  if (/permission denied/i.test(message)) return '当前 SSH 用户没有访问权限。可以返回上级目录或联系服务器管理员。';
+  if (/no such file|not found/i.test(message)) return '文件或目录可能已被移动或删除，请刷新列表。';
+  if (/not a directory/i.test(message)) return '这不是文件夹，请使用编辑或下载操作。';
+  if (/binary content/i.test(message)) return '这是二进制文件，不能在线编辑，请使用“下载”。';
+  if (/too large/i.test(message)) return '文件超过在线编辑的 1 MiB 限制，请下载后编辑。';
+  if (/outside|主目录之外|超出主目录/i.test(message)) return '这个路径或链接超出了允许访问的主目录。';
+  return message;
+}
+
 async function loadDir(path) {
   if (state.fileUploadActive) {
     toast('文件上传进行中，请等待完成后再切换目录', 'error');
     return;
   }
   if (!state.activeId) return;
-  if (!state.homeDir) {
-    $('#files-container').innerHTML = '<div class="empty-state">无法确定主目录，文件管理不可用</div>';
-    return;
+  const sessionId = state.activeId;
+  const requestId = ++directoryRequest;
+  const container = $('#files-container');
+  if (container.dataset.sessionId !== sessionId) {
+    container.innerHTML = '<div class="empty-state">正在读取文件列表…</div>';
+    container.dataset.sessionId = sessionId;
   }
+  container.setAttribute('aria-busy', 'true');
   let data;
   try {
     // path may be undefined -> server defaults to home
     data = await api(fileUrl(`?path=${encodeURIComponent(path == null ? '' : path)}`));
   } catch (e) {
-    toast('读取目录失败: ' + e.message, 'error');
+    if (state.activeId !== sessionId || requestId !== directoryRequest) return;
+    container.querySelector('.file-error')?.remove();
+    const errorBox = document.createElement('div');
+    errorBox.className = 'file-error';
+    errorBox.setAttribute('role', 'alert');
+    errorBox.innerHTML = `<span>无法打开目录：${esc(friendlyFileError(e))}</span><button class="btn small files-retry">重试</button><button class="btn small files-home">返回主目录</button>`;
+    if (!container.querySelector('#file-drop')) container.innerHTML = '';
+    container.prepend(errorBox);
+    errorBox.querySelector('.files-retry').onclick = () => loadDir(path);
+    errorBox.querySelector('.files-home').onclick = () => loadDir();
     return;
+  } finally {
+    if (state.activeId === sessionId && requestId === directoryRequest) container.removeAttribute('aria-busy');
   }
+  if (state.activeId !== sessionId || requestId !== directoryRequest) return;
   state.currentPath = data.path;
   state.homeDir = data.homeDir || state.homeDir;
   const box = $('#files-container');
@@ -1399,6 +1523,7 @@ async function loadDir(path) {
       <button class="btn small primary" id="f-upload">⬆ 上传文件</button>
       <input type="file" id="f-upload-input" multiple style="display:none" />
     </div>
+    <div class="file-list-help">点击文件夹进入；点击文本文件编辑，其他文件下载。在线编辑最多支持 1 MiB。</div>
     <div id="file-upload-progress" class="upload-progress hidden" aria-live="polite">
       <div class="upload-progress-head">
         <span id="file-upload-label">准备上传</span>
@@ -1409,21 +1534,22 @@ async function loadDir(path) {
     </div>
     <div class="file-table-wrap" id="file-drop">
       <table class="tbl">
-        <thead><tr><th>名称</th><th>大小</th><th>修改时间</th><th style="width:150px">操作</th></tr></thead>
+        <thead><tr><th>名称</th><th>类型</th><th>大小</th><th>修改时间</th><th style="width:150px">操作</th></tr></thead>
         <tbody>
           ${data.items.length
-            ? data.items.map((it) => `
+            ? data.items.map((it) => { const kind = fileAction(it); return `
               <tr data-path="${esc(it.path)}" data-dir="${it.isDirectory ? 1 : 0}">
-                <td class="fname"><span class="ico">${it.isDirectory ? '📁' : '📄'}</span>${esc(it.name)}</td>
+                <td class="fname"><button type="button" class="file-open ${it.isDirectory ? 'file-folder' : ''}" title="${kind.action}：${esc(it.name)}" data-action="${kind.action === '打开文本编辑' ? 'edit' : it.isDirectory ? 'folder' : 'download'}"><span class="ico" aria-hidden="true">${kind.icon}</span><span>${esc(it.name)}</span><span class="file-action-hint">${it.isDirectory ? '进入 →' : kind.action === '打开文本编辑' ? '编辑' : '下载 ↓'}</span></button></td>
+                <td class="dim file-kind">${kind.label}</td>
                 <td class="dim">${it.isDirectory ? '-' : fmtSize(it.size)}</td>
                 <td class="dim">${fmtDate(it.mtime)}</td>
                 <td class="ops">
-                  ${it.isDirectory ? '' : '<button class="btn small edit" title="编辑文本文件">编辑</button><button class="btn small dl" title="下载">下载</button>'}
+                  ${it.isDirectory ? '<button class="btn small enter">打开</button>' : `${kind.edit ? '<button class="btn small edit" title="编辑文本文件（最多 1 MiB）">编辑</button>' : ''}<button class="btn small dl" title="下载文件">下载</button>`}
                   <button class="btn small rn" title="重命名">重命名</button>
                   <button class="btn small danger del" title="删除">删除</button>
                 </td>
-              </tr>`).join('')
-            : '<tr><td colspan="4" class="dim">（空目录）</td></tr>'}
+              </tr>`; }).join('')
+            : '<tr><td colspan="5" class="dim">这个文件夹还是空的，可以新建文件或拖拽上传。</td></tr>'}
         </tbody>
       </table>
     </div>
@@ -1440,19 +1566,20 @@ async function loadDir(path) {
   $('#f-refresh').onclick = () => loadDir(state.currentPath);
   $('#f-mkdir').onclick = () => {
     const name = prompt('新目录名:');
-    if (!name) return;
+    if (name === null || !validFileName(name)) return;
     api(fileUrl('/mkdir'), { method: 'POST', body: JSON.stringify({ path: joinRemote(state.currentPath, name) }) })
       .then(() => loadDir(state.currentPath))
       .catch((e) => toast(e.message, 'error'));
   };
   $('#f-new-file').onclick = async () => {
     const name = prompt('新文件名:');
-    if (!name) return;
+    if (name === null || !validFileName(name)) return;
     const filePath = joinRemote(state.currentPath, name);
     try {
       await api(fileUrl('/new'), { method: 'POST', body: JSON.stringify({ path: filePath }) });
+      if (state.activeId !== sessionId) return;
       await loadDir(state.currentPath);
-      openFileEditor(filePath);
+      if (state.activeId === sessionId) openFileEditor(filePath);
     } catch (e) {
       toast('创建文件失败: ' + e.message, 'error');
     }
@@ -1479,21 +1606,22 @@ async function loadDir(path) {
 
   $$('#file-drop tbody tr').forEach((tr) => {
     if (!tr.dataset.path) return;
-    tr.querySelector('.fname').onclick = async () => {
-      if (tr.dataset.dir) {
-        loadDir(tr.dataset.path);
-      } else {
-        const a = document.createElement('a');
-        a.href = `/api/files/${state.activeId}/download?path=${encodeURIComponent(tr.dataset.path)}`;
-        a.click();
-      }
+    const isDirectory = tr.dataset.dir === '1';
+    const download = () => {
+      const link = document.createElement('a');
+      link.href = `/api/files/${sessionId}/download?path=${encodeURIComponent(tr.dataset.path)}`;
+      link.download = tr.dataset.path.split('/').pop();
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
     };
-    tr.querySelector('.dl')?.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const a = document.createElement('a');
-      a.href = `/api/files/${state.activeId}/download?path=${encodeURIComponent(tr.dataset.path)}`;
-      a.click();
-    });
+    tr.querySelector('.file-open').onclick = () => {
+      if (isDirectory) loadDir(tr.dataset.path);
+      else if (tr.querySelector('.file-open').dataset.action === 'edit') openFileEditor(tr.dataset.path);
+      else download();
+    };
+    tr.querySelector('.enter')?.addEventListener('click', () => loadDir(tr.dataset.path));
+    tr.querySelector('.dl')?.addEventListener('click', download);
     tr.querySelector('.edit')?.addEventListener('click', (e) => {
       e.stopPropagation();
       openFileEditor(tr.dataset.path);
@@ -1502,7 +1630,7 @@ async function loadDir(path) {
       e.stopPropagation();
       const cur = tr.dataset.path.split('/').filter(Boolean).pop();
       const newName = prompt('新名称:', cur);
-      if (!newName || newName === cur) return;
+      if (newName === null || newName === cur || !validFileName(newName)) return;
       const parent = tr.dataset.path.replace(/\/+[^/]+$/, '') || '/';
       api(fileUrl('/rename'), { method: 'POST', body: JSON.stringify({ from: tr.dataset.path, to: joinRemote(parent, newName) }) })
         .then(() => loadDir(state.currentPath))
@@ -1511,7 +1639,7 @@ async function loadDir(path) {
     tr.querySelector('.del')?.addEventListener('click', async (e) => {
       e.stopPropagation();
       const p = tr.dataset.path;
-      if (!confirm(`确定删除 ${p} ？${tr.dataset.dir ? '（目录将被递归删除）' : ''}`)) return;
+      if (!confirm(`确定删除 ${p} ？${isDirectory ? '（文件夹及其中全部内容都会删除，无法撤销）' : '（文件将被删除，无法撤销）'}`)) return;
       try {
         await api(fileUrl('/delete'), { method: 'POST', body: JSON.stringify({ path: p }) });
         loadDir(state.currentPath);
@@ -1604,14 +1732,22 @@ async function uploadFiles(files) {
 
 /* ================= system ================= */
 
+let systemRefreshPending = false;
 async function refreshSystem() {
-  if (!state.activeId) return;
-  let data;
+  if (!state.activeId || systemRefreshPending) return;
+  const sessionId = state.activeId;
+  systemRefreshPending = true;
+  let data, monitor;
   try {
-    data = await api('/api/info/' + state.activeId);
+    [data, monitor] = await Promise.all([
+      api('/api/info/' + sessionId),
+      state.currentUser?.isAdmin ? api('/api/admin/monitor/' + sessionId).catch((e) => ({ error: e.message })) : Promise.resolve(null),
+    ]);
   } catch (e) {
+    if (state.activeId === sessionId && state.activeTab === 'system') $('#system-container').textContent = '读取系统信息失败：' + e.message;
     return;
-  }
+  } finally { systemRefreshPending = false; }
+  if (state.activeId !== sessionId || state.activeTab !== 'system') return;
   state.sysHistory.push({
     t: Date.now(),
     load1: data.load?.[0] ?? 0,
@@ -1624,6 +1760,7 @@ async function refreshSystem() {
   const barCls = (v) => (v >= 90 ? 'critical' : v >= 70 ? 'hot' : '');
 
   const box = $('#system-container');
+  const openAuditDetails = [...box.querySelectorAll('.audit-raw[open], .audit-rules[open]')].map((el) => el.className);
   box.innerHTML = `
     <div class="gpu-header"><b>系统信息</b><span class="meta">${esc(data.os)} | ${esc(data.hostname)} | 已运行 ${fmtUptime(data.uptimeSec)}</span></div>
     <div class="sys-grid">
@@ -1646,6 +1783,7 @@ async function refreshSystem() {
         <div class="big">${fmtMB(data.diskUsed)} <span style="font-size:13px;color:var(--text-dim)">/ ${fmtMB(data.diskTotal)}</span></div>
         <div class="bar"><i class="${barCls(diskPct)}" style="width:${diskPct}%"></i></div>
         <div class="sub">使用率 ${diskPct}%</div>
+        ${state.currentUser?.isAdmin ? '<button class="btn small" data-act="disk-users" style="margin-top:12px">查看各用户磁盘占用</button>' : ''}
       </div>
     </div>
     <div class="gpu-charts" style="margin-top:16px">
@@ -1659,8 +1797,72 @@ async function refreshSystem() {
       </div>
     </div>`;
 
+  if (monitor) box.insertAdjacentHTML('afterbegin', renderAdminMonitor(monitor));
+  box.querySelector('[data-act="disk-users"]')?.addEventListener('click', () => {
+    const server = state.servers.find((s) => s.sessionId === sessionId);
+    if (server) openDiskUsage(server);
+  });
+  for (const className of openAuditDetails) box.querySelector('.' + className)?.setAttribute('open', '');
   drawLineChart($('#chart-load'), [state.sysHistory.map((p) => p.load1)], [GPU_COLORS[0]], null, '');
   drawLineChart($('#chart-mem'), [state.sysHistory.map((p) => p.memPct)], [GPU_COLORS[1]], 100, '%');
+}
+
+const auditLabels = { normal: '正常', warning: '可疑', critical: '高风险', unknown: '待确认' };
+function auditState(server) {
+  const data = server.auditMonitor;
+  if (!server.sessionId) return { level: 'unknown', message: '未连接，无法审计' };
+  if (server.statusError) return { level: 'unknown', message: '连接状态读取失败，等待重试' };
+  if (!data || data.sessionId !== server.sessionId) return { level: 'unknown', message: '等待首次采集' };
+  if (data.error) return { level: 'unknown', message: '采集失败：' + data.error };
+  if (!data.audit) return { level: 'unknown', message: '后端未返回审计数据，请重启服务并刷新页面' };
+  if (Date.now() - data.collectedAt > 30000) return { level: 'unknown', message: '数据已过期，等待重新采集' };
+  return { level: data.audit?.level || 'unknown', message: data.audit?.reasons[0]?.message || (data.audit?.complete ? '未触发异常规则' : (data.audit?.issues?.[0]?.message?.slice(0, 120) || '审计数据不完整，请查看详情')) };
+}
+
+function renderSshAudit(data) {
+  const a = data.audit;
+  if (!a) return '<p class="audit-badge audit-unknown">SSH 审计数据不可用</p>';
+  const metric = (label, value) => `<div class="audit-metric"><span>${label}</span><strong>${value == null ? '—' : value}</strong></div>`;
+  return `<section class="ssh-audit audit-${a.level}">
+    <div class="audit-heading"><div><h3>SSH 安全审计</h3><span class="dim">${esc(new Date(data.collectedAt).toLocaleTimeString())} 更新 · 每约 5 秒自动检查</span></div><span class="audit-badge audit-${a.level}">${auditLabels[a.level]}</span></div>
+    <div class="audit-metrics">${metric('当前 SSH 连接', a.connectionCount)}${metric('失败登录 / 最近一小时', a.failureCount == null ? null : `${a.truncated ? '≥' : ''}${a.failureCount}`)}${metric('已观测来源', a.sources.length)}</div>
+    <p><span class="audit-badge audit-${a.connectionLevel || 'unknown'}">连接检查：${a.connectionLevel === 'normal' ? '未触发异常规则' : auditLabels[a.connectionLevel || 'unknown']}</span> <span class="dim">${data.failures?.available ? '失败日志来源：' + esc(data.failures.source || 'lastb') : '失败登录检查：日志不可用'}</span></p>
+    <div class="audit-findings">${a.reasons.length ? a.reasons.map((r) => `<p class="audit-badge audit-${r.level}">${esc(r.message)}</p>`).join('') : `<p>${a.complete ? '✓ 当前未触发异常规则' : '审计不完整，暂不能判定为正常'}</p>`}
+    ${!a.complete ? `<p class="audit-incomplete">部分数据不可用：${esc(a.missing.map((k) => k === 'failures' ? '失败登录日志' : 'SSH 连接').join('、'))}${a.unparsed ? ` · ${a.unparsed} 行无法解析` : ''}。已检测到的异常仍会显示。</p>${(a.issues || []).map((issue) => `<p class="audit-incomplete">${esc(issue.message)}</p>${issue.hint ? `<p>${esc(issue.hint)}</p>` : ''}`).join('')}` : ''}</div>
+    <h4>来源分布</h4><div class="file-table-wrap"><table><thead><tr><th>来源 IP</th><th>当前连接</th><th>一小时失败次数</th><th>状态</th></tr></thead><tbody>
+    ${a.sources.map((source) => `<tr class="audit-source-${source.level}"><td>${esc(source.address)}</td><td>${a.connectionCount == null ? '—' : source.connections}</td><td><div class="audit-frequency"><i style="width:${Math.min(100, source.failures / 20 * 100)}%"></i><span>${a.failureCount == null ? '—' : source.failures}</span></div></td><td><span class="audit-badge audit-${source.level === 'normal' && !a.complete ? 'unknown' : source.level}">${source.level === 'normal' ? (a.complete ? '未触发规则' : '数据不完整') : auditLabels[source.level]}</span></td></tr>`).join('') || '<tr><td colspan="4">暂无来源数据</td></tr>'}
+    </tbody></table></div>
+    <details class="audit-rules"><summary>判定规则与采集范围</summary><p>${esc(a.rules)}</p><p>优先读取最多 200 条失败登录记录；不可用时尝试读取最近一小时的系统 SSH 日志（最多 5000 条日志）。达到上限时显示下界。灰色表示未连接、采集失败或数据不足；颜色表示规则告警，不代表已确认入侵。此面板按当前快照判定，不自动封禁 IP，也不保存历史审计记录。</p></details>
+  </section>`;
+}
+
+function renderAdminMonitor(data) {
+  if (data.error) return `<p class="audit-badge audit-unknown">SSH 审计待确认 · 采集失败：${esc(data.error)}</p>`;
+  const raw = (section, empty) => section?.available
+    ? `<pre class="monitor-output">${esc(section.text || empty)}</pre>`
+    : `<p class="dim">无法读取：${esc(section?.error || '数据不可用')}</p>`;
+  const rows = (data.processes?.items || []).map((p) => `<tr><td>${esc(p.user)}</td><td>${p.pid}</td><td>${p.cpu}%</td><td>${p.memory}%</td><td>${esc(p.command)}</td></tr>`).join('');
+  return `<section class="admin-monitor">
+    ${renderSshAudit(data)}
+    <details class="audit-raw"><summary>查看 SSH 原始采集记录与平台连接</summary>
+    <p class="dim">采集于 ${esc(new Date(data.collectedAt).toLocaleTimeString())}，约每 5 秒刷新。可见范围取决于当前 SSH 用户权限。</p>
+    <h4>SSH TCP 连接（远端端口 ${data.port}）</h4>
+    <p class="dim">列：接收队列 / 发送队列 / 本地地址 / 来源地址。含尚未认证的连接；端口转发环境下端口可能与远端监听端口不同。</p>
+    ${raw(data.connections, '当前没有连接')}
+    <h4>已登录会话（用户、终端、登录时间、来源）</h4>
+    ${raw(data.logins, '当前没有终端登录记录（无终端的 SSH 会话不在此列）')}
+    <h4>最近一小时失败登录 · ${esc(data.failures?.source || '日志不可用')}</h4>
+    ${raw(data.failures, '当前没有失败登录记录')}
+    <p class="dim">失败日志通常需要 root 或日志读取权限，记录取决于服务器配置；此页面用于排查异常，不会自动封禁来源 IP。</p>
+    <h4>本平台到这台机器的连接</h4>
+    <div class="file-table-wrap"><table><thead><tr><th>平台用户</th><th>SSH 用户</th><th>连接时间</th></tr></thead><tbody>
+    ${(data.webSessions || []).map((s) => `<tr><td>${esc(s.webUser)}</td><td>${esc(s.username)}</td><td>${esc(new Date(s.createdAt).toLocaleString())}</td></tr>`).join('')}
+    </tbody></table></div>
+    </details>
+    <h4>CPU 占用最高的 30 个进程</h4>
+    <p class="dim">CPU 为 ps 报告的进程生命周期平均占用，多线程进程可超过 100%；内存为物理内存占比。</p>
+    ${data.processes?.available ? `<div class="file-table-wrap"><table><thead><tr><th>所属用户</th><th>PID</th><th>CPU</th><th>内存</th><th>进程</th></tr></thead><tbody>${rows || '<tr><td colspan="5">没有进程数据</td></tr>'}</tbody></table></div>` : raw(data.processes, '')}
+  </section>`;
 }
 
 /* ================= import from ssh config ================= */
@@ -1761,9 +1963,6 @@ function closeImportModal() {
 $('#btn-import-server').onclick = openImportModal;
 $('#btn-import-close').onclick = closeImportModal;
 $('#btn-import-cancel').onclick = closeImportModal;
-$('#import-modal').addEventListener('click', (e) => {
-  if (e.target === e.currentTarget) closeImportModal();
-});
 
 $('#btn-import-load-config').onclick = async () => {
   try {
@@ -1868,3 +2067,55 @@ $('#btn-import-confirm').onclick = async () => {
     $('#login-username').focus();
   }
 })();
+
+
+/* Administrator-only, on-demand disk ownership visualization. */
+const diskDialog = document.createElement('dialog');
+diskDialog.id = 'disk-usage-dialog';
+diskDialog.className = 'disk-dialog';
+diskDialog.setAttribute('aria-labelledby', 'disk-usage-title');
+document.body.appendChild(diskDialog);
+let diskViewRequest = 0;
+diskDialog.addEventListener('close', () => { diskViewRequest++; });
+function diskBytes(value) {
+  const n = Math.max(0, Number(value) || 0);
+  if (n < 1024) return n + ' B';
+  const unit = Math.min(4, Math.floor(Math.log(n) / Math.log(1024)));
+  return (n / 1024 ** unit).toFixed(1) + ' ' + ['B', 'KiB', 'MiB', 'GiB', 'TiB'][unit];
+}
+async function openDiskUsage(server) {
+  if (!state.currentUser?.isAdmin || !server.sessionId) return;
+  const request = ++diskViewRequest;
+  diskDialog.innerHTML = `<div class="disk-heading"><h3 id="disk-usage-title">${esc(serverLabel(server))} · 用户系统盘占用</h3><button class="btn" id="disk-close">关闭</button></div>
+    <p class="dim">统计根文件系统 /，按文件所属 UID 归属；包含系统用户，不包含独立挂载的数据盘。点击后扫描，结果缓存 5 分钟。</p>
+    <div id="disk-usage-result" aria-live="polite"><p><span class="spin"></span> 正在扫描，最多约 90 秒。关闭窗口不影响扫描，可稍后重新查看。</p></div>`;
+  diskDialog.querySelector('#disk-close').onclick = () => diskDialog.close();
+  if (!diskDialog.open) diskDialog.showModal();
+  const result = diskDialog.querySelector('#disk-usage-result');
+  try {
+    const data = await api('/api/admin/disk-usage/' + encodeURIComponent(server.sessionId));
+    if (request !== diskViewRequest || !diskDialog.open || !state.currentUser?.isAdmin) return;
+    const scanned = data.users.reduce((sum, row) => sum + row.bytes, 0);
+    const percent = (bytes) => data.total ? Math.min(100, bytes / data.total * 100) : 0;
+    result.innerHTML = `<p class="disk-notice ${data.complete ? '' : 'disk-partial'}">${data.complete ? '扫描完成' : '部分统计：已读到的占用仅为下界'} · ${esc(new Date(data.collectedAt).toLocaleString())} · 耗时 ${data.duration} 秒
+      ${!data.privileged ? '<br>当前 SSH 用户不是 root，无法确认全盘可见性；平台管理员权限不等于远端 root。完整统计需要使用有读取权限的 SSH 账号或已有的免密 sudo 权限。' : ''}
+      ${data.errors ? `<br>${data.errors} 个读取错误（可能为权限不足或扫描期间文件发生变化）。` : ''}
+      ${data.limited ? '<br>已达到扫描时间、条目数或内存保护上限。' : ''}</p>
+      <div class="disk-totals"><span>总容量 <b>${diskBytes(data.total)}</b></span><span>文件系统已用 <b>${diskBytes(data.used)}</b></span><span>已归属用户 <b>${diskBytes(scanned)}</b></span><span>可用 <b>${diskBytes(data.available)}</b></span></div>
+      <div class="bar disk-total-bar" aria-label="系统盘使用率 ${percent(data.used).toFixed(1)}%"><i style="width:${percent(data.used)}%"></i></div>
+      <p class="dim">按已分配磁盘块统计，硬链接只计一次，不跟随符号链接。文件系统元数据、已删除但仍打开的文件、快照及扫描期间的变化，会导致汇总与系统已用容量不同。</p>
+      <label class="disk-filter"><input type="checkbox" id="disk-show-zero"> 显示未观测到占用的用户（${data.users.filter(r => !r.bytes).length}）</label>
+      <div class="file-table-wrap"><table class="disk-users-table"><thead><tr><th>远端用户 / UID</th><th>磁盘占用</th><th>占系统盘总容量</th></tr></thead><tbody></tbody></table></div>
+      <p class="dim">${data.complete ? '0 表示本次扫描未观测到占用。' : '未观测到占用不代表实际为 0。'} 此视图只读取统计，不修改文件或权限。</p>`;
+    const renderRows = () => {
+      const rows = data.users.filter(row => row.bytes || result.querySelector('#disk-show-zero').checked);
+      result.querySelector('tbody').innerHTML = rows.map(row => `<tr><td>${esc(row.user)} <span class="dim">(${row.uid})</span></td><td>${!row.bytes && !data.complete ? '未观测到' : diskBytes(row.bytes)}</td><td><div class="disk-user-meter"><div class="bar"><i style="width:${percent(row.bytes)}%"></i></div><span>${row.bytes && percent(row.bytes) < 0.1 ? '<0.1' : percent(row.bytes).toFixed(1)}%</span></div></td></tr>`).join('') || '<tr><td colspan="3">未观测到用户占用数据。</td></tr>';
+    };
+    result.querySelector('#disk-show-zero').onchange = renderRows;
+    renderRows();
+  } catch (error) {
+    if (request !== diskViewRequest || !diskDialog.open) return;
+    result.innerHTML = `<p role="alert">${esc(error.message)}</p><button class="btn" id="disk-retry">重试</button>`;
+    result.querySelector('#disk-retry').onclick = () => openDiskUsage(server);
+  }
+}

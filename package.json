@@ -4,7 +4,8 @@
   "description": "Web-based SSH server management system with terminal, GPU monitoring and file manager",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test test/*.test.js"
   },
   "engines": {
     "node": ">=18"

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Web SSH Manager</title>
   <link rel="stylesheet" href="/style.css" />
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css" />
+  <link rel="stylesheet" href="/vendor/xterm.css" />
 </head>
 <body>
   <section id="auth-view" class="auth-view">
@@ -60,10 +60,10 @@
           <input name="currentPassword" type="password" autocomplete="current-password" required />
         </label>
         <label>New password
-          <input name="newPassword" type="password" autocomplete="new-password" minlength="8" maxlength="128" required />
+          <input name="newPassword" type="password" autocomplete="new-password" minlength="12" maxlength="128" required />
         </label>
         <label>Confirm new password
-          <input name="confirmPassword" type="password" autocomplete="new-password" minlength="8" maxlength="128" required />
+          <input name="confirmPassword" type="password" autocomplete="new-password" minlength="12" maxlength="128" required />
         </label>
         <div class="form-actions">
           <button type="submit" class="btn primary">Update password</button>
@@ -103,7 +103,11 @@
       <button data-tab="system">System info</button>
     </nav>
     <section id="tab-terminal" class="tab active">
-      <div id="terminal-container" class="terminal-container"></div>
+      <div class="terminal-toolbar">
+        <div id="terminal-tabs" class="terminal-tabs" role="tablist" aria-label="此服务器的终端"></div>
+        <button type="button" class="btn small" id="btn-new-terminal">＋ 新建终端</button>
+      </div>
+      <div id="terminal-container" class="terminal-container"><div id="terminal-empty" class="empty-state hidden">暂无终端，点击“新建终端”打开一个 shell。</div></div>
     </section>
     <section id="tab-gpu" class="tab">
       <div id="gpu-container" class="panel">
@@ -248,10 +252,10 @@ Host myserver
           <input name="username" autocomplete="off" minlength="3" maxlength="32" required />
         </label>
         <label>Password
-          <input name="password" type="password" autocomplete="new-password" minlength="8" maxlength="128" required />
+          <input name="password" type="password" autocomplete="new-password" minlength="12" maxlength="128" required />
         </label>
         <label>Confirm password
-          <input name="passwordConfirm" type="password" autocomplete="new-password" minlength="8" maxlength="128" required />
+          <input name="passwordConfirm" type="password" autocomplete="new-password" minlength="12" maxlength="128" required />
         </label>
         <div class="form-actions">
           <button type="submit" class="btn primary">Create user</button>
@@ -282,9 +286,9 @@ Host myserver
   <div id="toast" class="toast hidden"></div>
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0.11.0/lib/addon-web-links.min.js"></script>
+  <script src="/vendor/xterm.js"></script>
+  <script src="/vendor/addon-fit.js"></script>
+  <script src="/vendor/addon-web-links.js"></script>
   <script src="/app.js?v=20260825-3"></script>
 </body>
 </html>

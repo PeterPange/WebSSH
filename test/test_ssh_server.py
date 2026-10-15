@@ -27,6 +27,9 @@ with open(os.path.join(ROOT, "hello.txt"), "w") as f:
 HOME = os.path.join(ROOT, "home", "testuser")
 os.makedirs(HOME, exist_ok=True)
 
+os.symlink(os.path.join(ROOT, "var"), os.path.join(HOME, "outside"))
+os.mkdir(os.path.join(HOME, "actual"))
+os.symlink(os.path.join(HOME, "actual"), os.path.join(HOME, "linked"))
 print(f"ROOT={ROOT}", flush=True)
 
 try:
@@ -88,6 +91,15 @@ def handle_exec(channel, command):
                 b"===UPTIME===\n90061\n"
                 b"===HOSTNAME===\nmock-gpu-node\n"
             )
+        elif cmd.startswith("LC_ALL=C ss "):
+            out = b"0 0 10.0.0.1:2222 198.51.100.7:54321\n"
+        elif cmd == "LC_ALL=C who -u":
+            out = b"testuser pts/0 2026-09-30 12:00 . 1234 (198.51.100.7)\n"
+        elif "LC_ALL=C ps -eo" in cmd:
+            out = b"USER PID %CPU %MEM COMMAND\ntrainer 1234 150.2 12.3 python\ntestuser 5678 2.1 0.4 sshd\n"
+        elif "lastb -s" in cmd or "journalctl --system" in cmd:
+            code = 1
+            channel.send_stderr(b"lastb: Permission denied\n")
         elif cmd.startswith("ps -o pid=,user= -p"):
             out = b"1234 testuser\n"
         elif cmd.startswith("ps -o pid=,args= -p"):
@@ -157,6 +169,11 @@ class SFTPServer(paramiko.SFTPServerInterface):
         if not (p == self.root or p.startswith(self.root + os.sep)):
             raise paramiko.SFTPException("path escape")
         return p
+
+    def canonicalize(self, path):
+        if path == '.':
+            return HOME
+        return os.path.realpath(self._realpath(path))
 
     def list_folder(self, path):
         p = self._realpath(path)
